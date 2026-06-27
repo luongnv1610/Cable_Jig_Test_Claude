@@ -1,0 +1,5 @@
+Change Component Comment : Designator=U21 Old Comment= New Comment=FT232RL-REEL
+Change Component Comment : Designator=C1 Old Comment=330uF-35V New Comment=cap smd
+Change Component Comment : Designator=C8 Old Comment=330uF-35V New Comment=cap smd
+Change Component Description : Designator=L1 Old Description=CDRH127-101 12x12x7mm New Description=Inductor
+Added Room: Name=CABLE_JIG_TEST_SCH

@@ -1,0 +1,13 @@
+Removed Pin From Net: NetName=A1_ENABLE Pin=R246-1
+Removed Pin From Net: NetName=A7_ENABLE Pin=R251-2
+Removed Pin From Net: NetName=A3_ENABLE Pin=R254-1
+Removed Pin From Net: NetName=A6_ENABLE Pin=R255-2
+Removed Pin From Net: NetName=A4_ENABLE Pin=R258-1
+Removed Pin From Net: NetName=A5_ENABLE Pin=R259-2
+Added Pin To Net: NetName=A6_ENABLE Pin=R246-1
+Added Pin To Net: NetName=A4_ENABLE Pin=R251-2
+Added Pin To Net: NetName=A5_ENABLE Pin=R254-1
+Added Pin To Net: NetName=A7_ENABLE Pin=R255-2
+Added Pin To Net: NetName=A1_ENABLE Pin=R258-1
+Added Pin To Net: NetName=A3_ENABLE Pin=R259-2
+Added Room: Name=CABLE_JIG_TEST_SCH

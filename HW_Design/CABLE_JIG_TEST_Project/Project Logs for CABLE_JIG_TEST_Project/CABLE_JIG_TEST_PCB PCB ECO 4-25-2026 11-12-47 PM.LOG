@@ -1,0 +1,9 @@
+Added Component: Designator=VIT1(VIT)
+Added Component: Designator=VIT2(VIT)
+Added Component: Designator=VIT3(VIT)
+Added Component: Designator=VIT4(VIT)
+Added Member To Class: ClassName=CABLE_JIG_TEST_SCH Member=Component VIT1 1
+Added Member To Class: ClassName=CABLE_JIG_TEST_SCH Member=Component VIT2 1
+Added Member To Class: ClassName=CABLE_JIG_TEST_SCH Member=Component VIT3 1
+Added Member To Class: ClassName=CABLE_JIG_TEST_SCH Member=Component VIT4 1
+Added Room: Name=CABLE_JIG_TEST_SCH

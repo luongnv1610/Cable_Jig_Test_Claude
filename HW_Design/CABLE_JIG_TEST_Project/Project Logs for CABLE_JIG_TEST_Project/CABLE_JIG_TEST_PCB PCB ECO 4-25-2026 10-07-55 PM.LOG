@@ -1,0 +1,4 @@
+Change Net Name : Old Net Name=NetJ3_2 New Net Name=CNN_D_N
+Change Net Name : Old Net Name=NetJ3_3 New Net Name=CNN_D_P
+Added Differential Pair: Name=CNN_D
+Added Room: Name=CABLE_JIG_TEST_SCH

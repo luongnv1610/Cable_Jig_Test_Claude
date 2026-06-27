@@ -1,0 +1,5 @@
+Removed Pin From Net: NetName=A7_Z_MCU Pin=U10-14
+Removed Pin From Net: NetName=A8_Z_MCU Pin=U10-15
+Added Pin To Net: NetName=A8_Z_MCU Pin=U10-14
+Added Pin To Net: NetName=A7_Z_MCU Pin=U10-15
+Added Room: Name=CABLE_JIG_TEST_SCH

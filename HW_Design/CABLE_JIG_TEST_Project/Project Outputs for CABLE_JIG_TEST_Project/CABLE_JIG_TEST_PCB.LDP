@@ -1,0 +1,3 @@
+Layer Pairs Export File for PCB: C:\0.Project\1. OUTSOURCE_PROJECT\1. Cable jig test\0.PROJECT\CABLE_JIG_TEST_Project\CABLE_JIG_TEST_PCB.PcbDoc
+LayersSetName=Top_Bot_Thru_Holes|DrillFile=cable_jig_test_pcb-roundholes.txt|DrillLayers=gtl,g1,g2,gbl
+LayersSetName=Top_Bot_Slot_Holes|DrillFile=cable_jig_test_pcb-slotholes.txt|DrillLayers=gtl,g1,g2,gbl

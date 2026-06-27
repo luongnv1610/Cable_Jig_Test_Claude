@@ -1,0 +1,29 @@
+------------------------------------------------------------------------------------------
+Gerber File Extension Report For: CABLE_JIG_TEST_PCB.GBR   4/27/2026  8:55:29 PM
+------------------------------------------------------------------------------------------
+
+
+------------------------------------------------------------------------------------------
+Layer Extension     Layer Description                      
+------------------------------------------------------------------------------------------
+.GTO                Top Overlay                             
+.GTP                Top Paste                               
+.GTS                Top Solder                              
+.GTL                Top Layer 1                             
+.G1                 Top Layer                               
+.G2                 Bottom Layer                            
+.GBL                Bottom Layer 1                          
+.GBS                Bottom Solder                           
+.GBO                Bottom Overlay                          
+.GM1                Mechanical 1                            
+.GM8                Top Assembly                            
+.GM11               Top Courtyard                           
+.GM13               Mechanical 13                           
+.GM14               Top 3D Body                             
+.GM15               Mechanical 15                           
+.GM18               Top Component Center                    
+.GM29               Mechanical 29                           
+.GKO                Keep-Out Layer                          
+.GPT                Top Pad Master                          
+.GPB                Bottom Pad Master                       
+------------------------------------------------------------------------------------------
