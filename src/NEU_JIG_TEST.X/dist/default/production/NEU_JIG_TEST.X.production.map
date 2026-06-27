@@ -85,11 +85,11 @@ Default Scalar Model: Small
 section                    address   length (PC units)   length (bytes) (dec)
 -------                    -------   -----------------   --------------------
 .text                        0x100                0xe6           0x159  (345)
-.const                       0x1e6               0x6ae           0xa05  (2565)
-.text                        0x894              0x1744          0x22e6  (8934)
-.dinit                      0x1fd8                0x22            0x33  (51)
+.const                       0x1e6               0x5c6           0x8a9  (2217)
+.text                        0x7ac              0x1754          0x22fe  (8958)
+.dinit                      0x1f00                0x22            0x33  (51)
 
-                 Total "program" memory used (bytes):         0x2e77  (11895) 24%
+                 Total "program" memory used (bytes):         0x2d33  (11571) 23%
 
 
 "data" Memory  [Origin = 0x800, Length = 0x800]
@@ -122,7 +122,7 @@ External Symbols in Program Memory (by address):
                   0x000152                  __data_init_standard
                   0x0001c8                  __T1Interrupt
                   0x0001e0                  __DefaultInterrupt
-                  0x001eb8                  _main
+                  0x001de0                  _main
                   0xf8000a                  __FGS.sec
 
 External Symbols in Program Memory (by name):
@@ -134,7 +134,7 @@ External Symbols in Program Memory (by name):
                   0x000152                  __data_init_standard
                   0x00013c                  __psv_init
                   0x000100                  __resetPRI
-                  0x001eb8                  _main
+                  0x001de0                  _main
 
 Memory Configuration
 
@@ -254,7 +254,7 @@ __RESERVED2
 
 __FGS             0xf8000a          0x2
  *(__FGS.sec*)
- __FGS.sec        0xf8000a          0x2 /CW/_FGSðMß
+ __FGS.sec        0xf8000a          0x2 /CW/_FGSðMæ
                   0xf8000a                  __FGS.sec
 
 __FICD
@@ -269,18 +269,18 @@ userdata
 .comment
  *(.comment)
 
-.debug_info       0x000000       0x285c
+.debug_info       0x000000       0x2841
  *(.debug_info)
- .debug_info      0x000000       0x285c build/default/production/main.o
+ .debug_info      0x000000       0x2841 build/default/production/main.o
  *(.gnu.linkonce.wi.*)
 
 .debug_abbrev     0x000000        0x211
  *(.debug_abbrev)
  .debug_abbrev    0x000000        0x211 build/default/production/main.o
 
-.debug_line       0x000000        0x53d
+.debug_line       0x000000        0x540
  *(.debug_line)
- .debug_line      0x000000        0x53d build/default/production/main.o
+ .debug_line      0x000000        0x540 build/default/production/main.o
 
 .debug_frame      0x000000        0x532
  *(.debug_frame)
@@ -1017,7 +1017,7 @@ LOAD c:/program files/microchip/xc16/v2.10/bin/bin/../../lib\libm-elf.a
 LOAD c:/program files/microchip/xc16/v2.10/bin/bin/../../lib\libc99-elf.a
 END GROUP
 OUTPUT(dist/default/production/NEU_JIG_TEST.X.production.elf elf32-pic30)
-LOAD /CW/_FGSðMß
+LOAD /CW/_FGSðMæ
 LOAD default_isr
 LOAD data_init
 
@@ -1046,12 +1046,12 @@ __c30_signature
  .ivt._T1Interrupt
                   0x00001a          0x2 build/default/production/main.o
 
-.const              0x81e6        0x6ae load address 0x0001e6  
- .const             0x81e6        0x6ae build/default/production/main.o
+.const              0x81e6        0x5c6 load address 0x0001e6  
+ .const             0x81e6        0x5c6 build/default/production/main.o
 
-.text             0x000894       0x1744
- .text            0x000894       0x1744 build/default/production/main.o
-                  0x001eb8                  _main
+.text             0x0007ac       0x1754
+ .text            0x0007ac       0x1754 build/default/production/main.o
+                  0x001de0                  _main
 
-.dinit            0x001fd8         0x22
- .dinit           0x001fd8         0x22 data_init
+.dinit            0x001f00         0x22
+ .dinit           0x001f00         0x22 data_init

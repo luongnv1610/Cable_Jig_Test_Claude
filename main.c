@@ -142,32 +142,8 @@ static const PinDef PIN_TABLE[TOTAL_PINS] = {
     /* 112-115 */ {'G',13},{'G',14},{'G',15},{'G',16}
 };
 
-/* J2 cable map indexed by J1 pin index:
- *   J1.A <-> J2.D,  J1.E <-> J2.G,  J1.B <-> J2.C,  J1.F <-> J2.F
- *   J1.C <-> J2.B,  J1.G <-> J2.E,  J1.D <-> J2.A  (same pin number within each pair) */
-static const PinDef J2_PIN_TABLE[TOTAL_PINS] = {
-    /* J1 Row A 0-16  -> J2 Row D */
-    {'D', 1},{'D', 2},{'D', 3},{'D', 4},{'D', 5},{'D', 6},{'D', 7},{'D', 8},
-    {'D', 9},{'D',10},{'D',11},{'D',12},{'D',13},{'D',14},{'D',15},{'D',16},{'D',17},
-    /* J1 Row E 17-32 -> J2 Row G */
-    {'G', 1},{'G', 2},{'G', 3},{'G', 4},{'G', 5},{'G', 6},{'G', 7},{'G', 8},
-    {'G', 9},{'G',10},{'G',11},{'G',12},{'G',13},{'G',14},{'G',15},{'G',16},
-    /* J1 Row B 33-49 -> J2 Row C */
-    {'C', 1},{'C', 2},{'C', 3},{'C', 4},{'C', 5},{'C', 6},{'C', 7},{'C', 8},
-    {'C', 9},{'C',10},{'C',11},{'C',12},{'C',13},{'C',14},{'C',15},{'C',16},{'C',17},
-    /* J1 Row F 50-65 -> J2 Row F */
-    {'F', 1},{'F', 2},{'F', 3},{'F', 4},{'F', 5},{'F', 6},{'F', 7},{'F', 8},
-    {'F', 9},{'F',10},{'F',11},{'F',12},{'F',13},{'F',14},{'F',15},{'F',16},
-    /* J1 Row C 66-82 -> J2 Row B */
-    {'B', 1},{'B', 2},{'B', 3},{'B', 4},{'B', 5},{'B', 6},{'B', 7},{'B', 8},
-    {'B', 9},{'B',10},{'B',11},{'B',12},{'B',13},{'B',14},{'B',15},{'B',16},{'B',17},
-    /* J1 Row G 83-98 -> J2 Row E */
-    {'E', 1},{'E', 2},{'E', 3},{'E', 4},{'E', 5},{'E', 6},{'E', 7},{'E', 8},
-    {'E', 9},{'E',10},{'E',11},{'E',12},{'E',13},{'E',14},{'E',15},{'E',16},
-    /* J1 Row D 99-115 -> J2 Row A */
-    {'A', 1},{'A', 2},{'A', 3},{'A', 4},{'A', 5},{'A', 6},{'A', 7},{'A', 8},
-    {'A', 9},{'A',10},{'A',11},{'A',12},{'A',13},{'A',14},{'A',15},{'A',16},{'A',17}
-};
+/* (J2_PIN_TABLE removed: unused and stale - only 9/66 matched the
+ * hardware-verified cable map.  J2 pin naming uses J2_PHYSICAL_MAP.) */
 
 
 /* ?????????????????????????????????????????????????????????????????????????????
@@ -193,15 +169,15 @@ static volatile uint8_t g_i2c2_error = 0u;   /* I2C2 soft (U20) error flag */
  * Delay
  * ????????????????????????????????????????????????????????????????????????????? */
 static void delay_ms(uint16_t ms) {
-    uint16_t i;
-    uint16_t j;
+    volatile uint16_t i;
+    volatile uint16_t j;
     for (i = 0; i < ms; i++)
         for (j = 0; j < (uint16_t)(FCY / 10000UL); j++);
 }
 
 static void delay_us(uint16_t us) {
     uint16_t i;
-    /* At Fcy=29.49MHz, 1us ~ 29 cycles. Each loop iteration ~ 2 cycles */
+    /* At Fcy=14.7456MHz: "repeat #14; nop" = 15 cycles ~ 1.0us */
     for (i = 0; i < us; i++)
         __asm__ volatile("repeat #14; nop");
 }
@@ -298,27 +274,6 @@ static void pin_name(uint8_t p, char *buf) {
     buf[1u + len] = '\0';
 }
 
-/* J2_PHYSICAL_MAP[rp]: the actual J2 cable pin at MUX scan position rp.
- *
- * scan_pin() calls pin2mux(rp) for rp=0..115 to select J2 channels.
- * Because the J2 connector is wired into the MUX in a different physical
- * order than J1, J2_PHYSICAL_MAP translates MUX scan index -> real pin name.
- *
- * This table is derived from the J-command Pass-2 scan order (which drives
- * each J2 pin individually and reports the physical MUX scan sequence) and
- * independently verified by F-row debug output cross-referenced against
- * manual continuity measurement.  58/58 confirmed positions match.
- *
- *   rp   0- 15: D-even/F-odd interleaved (D2,F3,D4,F5,...D16), then B1
- *   rp  16- 34: A1, C-even/C-odd interleaved, C15, C17
- *   rp  34- 50: F1, G2/G1, G4/G3, ..., G16/G15
- *   rp  51- 67: D1, B2/D3, B4/D5, ..., B16/D17
- *   rp  68- 83: A2..A17, E2
- *   rp  84- 98: E3..E16
- *   rp  99-106: B3,B5,B7,B9,B11,B13,B15,B17
- *   rp 107-114: F2,F4,F6,F8,F10,F12,F14,F16
- *   rp 115:     E1
- */
 /* J2_PHYSICAL_MAP[rp]: J2 connector pin at B-side MUX scan position rp (0..115).
  * J2 MUX groups U4..U18 use identical channel assignment as J1 (same schematic layout).
  * Therefore J2_PHYSICAL_MAP[rp] == PIN_TABLE[rp] ? both index sequentially A1..G16.
@@ -366,12 +321,12 @@ static void j2pin_name(uint8_t rp, char *buf) {
 
 /* ?????????????????????????????????????????????????????????????????????????????
  * I2C1 ? manual SFR driver (RF3=SCL1, RF2=SDA1) ? used for U19
- * Each wait loop has a ~4ms hardware timeout.  On bus lockup the flag
+ * Each wait loop has a hardware timeout (~8ms at Fcy=14.7456MHz).  On bus lockup the flag
  * g_i2c_error is set and all subsequent I2C calls return immediately,
  * so run_test() can detect the fault and report it to the PC instead of
  * hanging until the PC-side 120s timer fires.
  * ????????????????????????????????????????????????????????????????????????????? */
-#define I2C_TIMEOUT 30000u   /* ~4ms at Fcy=29.49MHz, 4 cycles/iter */
+#define I2C_TIMEOUT 30000u   /* ~8ms at Fcy=14.7456MHz */
 
 static void i2c_init(void) {
     I2CBRG = I2CBRG_VAL;
@@ -1000,7 +955,12 @@ static void run_test(void) {
     }
 
     uart_kn("TEST_DONE", total_conn);
-    LED_PASS = 1; LED_FAIL = 0;
+    /* Firmware cannot judge full cable correctness (expected pin-map lives
+     * on the PC). Light PASS only as a basic "scan completed with
+     * connections" sanity indication; FAIL if nothing detected. The
+     * authoritative PASS/FAIL is computed by the PC application. */
+    if (total_conn > 0u) { LED_PASS = 1; LED_FAIL = 0; }
+    else                 { LED_PASS = 0; LED_FAIL = 1; }
 }
 
 /* ?????????????????????????????????????????????????????????????????????????????
@@ -1019,6 +979,7 @@ static void run_diag(uint8_t drv_idx, uint8_t ch_idx) {
     uint16_t found;
     char     sa[6], sb[6];
 
+    (void)ch_idx;   /* reserved; not used by current diagnostic */
     pin2mux(drv_idx, &drv_mi, &drv_ch);
     g_i2c_error = 0u; g_i2c2_error = 0u;
     found = 0u;

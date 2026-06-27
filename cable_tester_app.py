@@ -158,7 +158,6 @@ class ReportGenerator:
         n_conn = len(result.connections)
 
         # ── Info cells ───────────────────────────────────────────────────
-        n_expected = len(EXPECTED_J1_TO_J2) + len(GND_J1)  # 66 signal + 50 GND = 116
         info_map = {
             "C5":  "—",
             "C6":  "Cable Continuity Scanner",
@@ -634,8 +633,11 @@ class SerialReader(threading.Thread):
             self.q.put(("DISCONNECTED", self.port))
 
     def send(self, cmd: str):
-        if self.ser and self.ser.is_open:
-            self.ser.write((cmd + "\r\n").encode())
+        try:
+            if self.ser and self.ser.is_open:
+                self.ser.write((cmd + "\r\n").encode())
+        except (serial.SerialException, OSError) as e:
+            self.q.put(("ERROR", f"Write failed: {e}"))
 
 
 # ── Main Application ──────────────────────────────────────────────────────
@@ -1354,6 +1356,8 @@ class App(tk.Tk):
             self._status(f"Scanning… S/N: {parts[1]}")
 
         elif tag == "CONN" and len(parts) >= 3:
+            if not self.in_test:
+                return
             j1 = parts[1][3:] if parts[1].startswith("J1.") else parts[1]
             j2 = parts[2][3:] if parts[2].startswith("J2.") else parts[2]
             conn = ConnectionRecord(j1, j2)
@@ -1842,6 +1846,7 @@ class App(tk.Tk):
         n = 0
         missing_signals: list = []
         miswire_signals: list = []
+        short_signals: list = []
 
         if self.current_result:
             self.current_result.completed = True
