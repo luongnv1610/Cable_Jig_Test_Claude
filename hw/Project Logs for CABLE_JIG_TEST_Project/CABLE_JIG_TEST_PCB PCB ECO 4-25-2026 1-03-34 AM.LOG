@@ -1,4 +1,0 @@
-Removed Pin From Net: NetName=SCL1_MCU Pin=U10-42
-Change Component Footprint: Designator=U21 Old Footprint=FP-SSOP-28-MFG New Footprint=FP-SSOP-28-MFG
-Added Pin To Net: NetName=SCL2_MCU Pin=U10-42
-Added Room: Name=CABLE_JIG_TEST_SCH

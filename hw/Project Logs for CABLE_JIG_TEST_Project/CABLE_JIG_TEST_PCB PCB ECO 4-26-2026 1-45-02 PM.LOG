@@ -1,9 +1,0 @@
-Removed Pin From Net: NetName=B1_Z_MCU Pin=U10-19
-Removed Pin From Net: NetName=B5_Z_MCU Pin=U10-20
-Removed Pin From Net: NetName=B2_Z_MCU Pin=U10-21
-Removed Pin From Net: NetName=B6_Z_MCU Pin=U10-22
-Added Pin To Net: NetName=B6_Z_MCU Pin=U10-19
-Added Pin To Net: NetName=B2_Z_MCU Pin=U10-20
-Added Pin To Net: NetName=B5_Z_MCU Pin=U10-21
-Added Pin To Net: NetName=B1_Z_MCU Pin=U10-22
-Added Room: Name=CABLE_JIG_TEST_SCH
