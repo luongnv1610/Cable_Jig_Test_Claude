@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Cable Jig Tester — PC Software
-Giao tiếp với MCU qua USB-COM (FT232), hiển thị kết quả,
-và generate report Excel từ template.
+Communicates with the MCU over USB-COM (FT232), shows results,
+and generates an Excel report from the template.
 
 Requirements: pip install pyserial openpyxl
 """
@@ -34,11 +34,12 @@ except ImportError:
     EXCEL_OK = False
 
 # ── Constants ─────────────────────────────────────────────────────────────
-APP_TITLE   = "Cable Jig Tester v4.5"
+APP_TITLE   = "Cable Jig Tester v4.6"
 BAUD_RATE   = 115200
 TIMEOUT_S   = 0.1
 TEMPLATE_FILE = "cable_test_report_template.xlsx"
 HISTORY_FILE  = "test_history.json"
+PROFILE_DIR   = "cable_profiles"
 
 # Colors
 CLR_PASS    = "#2ECC71"
@@ -57,44 +58,9 @@ CLR_MISWIRE = "#9B59B6"
 
 TOTAL_PINS = 116
 
-# ── GND common-ground pin sets ────────────────────────────────────────────
-# Pins on the shared GND bus (verified from manual measurement).
-GND_J1 = frozenset([
-    "A2","A4","A6","A8","A10","A12","A14","A16",
-    "E1","E3","E5","E7","E9","E11","E13","E15",
-    "B1","B3","B5","B7","B9","B11","B13","B15","B17",
-    "C2","C4","C6","C8","C10","C12","C14","C16",
-    "G2","G4","G6","G8","G10","G12","G14","G16",
-    "D1","D3","D5","D7","D9","D11","D13","D15","D17",
-])
-GND_J2 = frozenset([
-    "A1","A3","A5","A7","A9","A11","A13","A15","A17",
-    "E2","E4","E6","E8","E10","E12","E14","E16",
-    "B2","B4","B6","B8","B10","B12","B14","B16",
-    "C1","C3","C5","C7","C9","C11","C13","C15","C17",
-    "G1","G3","G5","G7","G9","G11","G13","G15",
-    "D2","D4","D6","D8","D10","D12","D14","D16",
-])
-
-# ── Expected signal connections (J1 → J2), verified from hardware ─────────
-EXPECTED_J1_TO_J2: dict = {
-    "A1":"D1",  "A3":"D3",  "A5":"D5",  "A7":"D7",  "A9":"D9",
-    "A11":"D11","A13":"D13","A15":"D15","A17":"D17",
-    "B2":"C2",  "B4":"C4",  "B6":"C6",  "B8":"C8",  "B10":"C10",
-    "B12":"C12","B14":"C14","B16":"C16",
-    "C1":"B1",  "C3":"B3",  "C5":"B5",  "C7":"B7",  "C9":"B9",
-    "C11":"B11","C13":"B13","C15":"B15","C17":"B17",
-    "D2":"A2",  "D4":"A4",  "D6":"A6",  "D8":"A8",  "D10":"A10",
-    "D12":"A12","D14":"A14","D16":"A16",
-    "E2":"G2",  "E4":"G4",  "E6":"G6",  "E8":"G8",  "E10":"G10",
-    "E12":"G12","E14":"G14","E16":"G16",
-    "F1":"F1",  "F2":"F2",  "F3":"F3",  "F4":"F4",  "F5":"F5",
-    "F6":"F6",  "F7":"F7",  "F8":"F8",  "F9":"F9",  "F10":"F10",
-    "F11":"F11","F12":"F12","F13":"F13","F14":"F14","F15":"F15","F16":"F16",
-    "G1":"E1",  "G3":"E3",  "G5":"E5",  "G7":"E7",  "G9":"E9",
-    "G11":"E11","G13":"E13","G15":"E15",
-}
-EXPECTED_J2_TO_J1: dict = {v: k for k, v in EXPECTED_J1_TO_J2.items()}
+# (Cable-specific data lives in the built-in DEFAULT_PROFILE below — defined
+# after CableProfile. The app is fully profile-driven; no hard-coded
+# GND/EXPECTED constants are used by the logic.)
 
 
 
@@ -120,480 +86,199 @@ class TestResult:
 
 @dataclass
 class JigPinResult:
-    """Kết quả chẩn đoán phần cứng cho một J1 pin (Jig Self-Diagnostic)."""
+    """Hardware diagnostic result for one J1 pin (Jig Self-Diagnostic)."""
     pin_name:       str
-    status:         str        # "OK" hoặc "FAIL"
-    conn_count:     int = 0    # số connection (chỉ dùng khi status="OK")
+    status:         str        # "OK" or "FAIL"
+    conn_count:     int = 0    # connection count (only when status="OK")
     mi:             int = -1   # MUX group index
     ch:             int = -1   # channel trong group
     lat:            int = -1   # ZA LAT readback (0=LOW/OK, 1=HIGH/FAIL)
-    out0:           int = -1   # U19 OUT0 readback (-1 = không có/I2C lỗi)
-    out1:           int = -1   # U19 OUT1 readback (-1 = không có/I2C lỗi)
-    i2c_err:        bool = False  # firmware báo I2C error khi đọc thanh ghi
-    root_cause:     str = ""   # nguyên nhân phân tích
-    recommendation: str = ""   # hành động khắc phục
+    out0:           int = -1   # U19 OUT0 readback (-1 = none / I2C error)
+    out1:           int = -1   # U19 OUT1 readback (-1 = none / I2C error)
+    i2c_err:        bool = False  # firmware reports I2C error when reading the register
+    root_cause:     str = ""   # analyzed root cause
+    recommendation: str = ""   # corrective action
 
 # ── Excel Report Generator ────────────────────────────────────────────────
-class ReportGenerator:
+# -- Cable profile (netlist) model -----------------------------------------
+@dataclass
+class CableProfile:
+    """Expected connection map (J1<->J2 edge set) for one cable type.
 
-    def thin(self, color="8EA9C1"):
-        s = Side(style='thin', color=color)
-        return Border(left=s, right=s, top=s, bottom=s)
+    Learned from a known-good 'golden' cable or loaded from JSON. Handles any
+    cable: pure point-to-point, with a GND bus, or different GND pins -- it
+    only compares the measured edge set against the expected edge set, with no
+    special-casing of GND.
+    """
+    name:       str
+    total_pins: int = TOTAL_PINS
+    edges:      set = field(default_factory=set)   # {(j1_pin, j2_pin)}
+    notes:      str = ""
+    created:    str = ""
 
-    def fill(self, color):
-        return PatternFill("solid", fgColor=color)
+    def to_dict(self):
+        return {"name": self.name, "total_pins": self.total_pins,
+                "notes": self.notes, "created": self.created,
+                "edges": sorted([list(e) for e in self.edges])}
 
-    def generate(self, result: TestResult, template_path: str, out_path: str) -> str:
-        if not EXCEL_OK:
-            raise RuntimeError("openpyxl not installed")
+    @classmethod
+    def from_dict(cls, d):
+        return cls(name=d.get("name", "?"),
+                   total_pins=int(d.get("total_pins", TOTAL_PINS)),
+                   notes=d.get("notes", ""), created=d.get("created", ""),
+                   edges={(e[0], e[1]) for e in d.get("edges", [])})
 
-        if os.path.exists(template_path):
-            wb = openpyxl.load_workbook(template_path)
-        else:
-            from create_template import create_template
-            create_template(template_path)
-            wb = openpyxl.load_workbook(template_path)
+    @classmethod
+    def from_connections(cls, name, connections, notes=""):
+        return cls(name=name,
+                   edges={(c.j1_pin, c.j2_pin) for c in connections},
+                   notes=notes,
+                   created=datetime.now().isoformat(timespec="seconds"))
 
-        ws = wb["Test Report"]
-        n_conn = len(result.connections)
+    def _cache(self):
+        c = getattr(self, "_dcache", None)
+        if c is None:
+            d1 = {}; d2 = {}
+            for a, b in self.edges:
+                d1[a] = d1.get(a, 0) + 1
+                d2[b] = d2.get(b, 0) + 1
+            sig = {a: b for a, b in self.edges if d1[a] == 1 and d2[b] == 1}
+            g1 = {a for a in d1 if d1[a] > 1}
+            g2 = {b for b in d2 if d2[b] > 1}
+            c = (sig, g1, g2)
+            self._dcache = c
+        return c
 
-        # ── Info cells ───────────────────────────────────────────────────
-        info_map = {
-            "C5":  "—",
-            "C6":  "Cable Continuity Scanner",
-            "C7":  result.serial_number,
-            "C8":  "—",
-            "C9":  result.timestamp.strftime("%Y-%m-%d"),
-            "C10": result.timestamp.strftime("%H:%M:%S"),
-            "C11": result.operator or "—",
-            "C12": result.fw_version or "—",
-            "H5":  str(result.total_pins),
-            "H6":  str(n_conn),
-            "H7":  "0",
-            "H8":  "0",
-            "H9":  "—",
-            "H10": "—",
-            "H11": f"{result.duration_s:.1f}",
-            "H12": result.com_port,
-        }
-        for ref, val in info_map.items():
-            ws[ref] = val
-            ws[ref].font = Font(name='Arial', size=10)
+    def signal_map(self):
+        """J1->J2 for 1:1 edges (both endpoints degree 1) = signal wires."""
+        return self._cache()[0]
 
-        # ── Separate signal vs GND connections ───────────────────────────
-        # Dedup signal: for each signal J1 pin, take first non-GND J2 hit.
-        # Also detect SHORT: signal J1 pin that also has GND_J2 hits = shorted to GND.
-        from collections import defaultdict as _dd
-        _j1_gnd  = _dd(list)   # signal J1 pin -> list of its GND_J2 hits
-        _j1_sig  = _dd(list)   # signal J1 pin -> list of its signal J2 hits
-        gnd_conns: list = []
+    def gnd_j1(self):
+        """J1 pins on a shared bus (degree > 1)."""
+        return self._cache()[1]
 
-        for c in result.connections:
-            if c.j1_pin in GND_J1 or c.j2_pin in GND_J2:
-                gnd_conns.append(c)
-                if c.j1_pin not in GND_J1:          # signal J1 pulling GND bus
-                    _j1_gnd[c.j1_pin].append(c.j2_pin)
-            else:
-                _j1_sig[c.j1_pin].append(c.j2_pin)  # real signal hit
+    def gnd_j2(self):
+        return self._cache()[2]
 
-        # Build deduped signal_conns (first hit per J1 pin)
-        _seen_j1: set = set()
-        signal_conns: list = []
-        for c in result.connections:
-            if c.j1_pin in GND_J1 or c.j2_pin in GND_J2:
-                continue
-            if c.j1_pin not in _seen_j1:
-                _seen_j1.add(c.j1_pin)
-                signal_conns.append(c)
-
-        n_signal = len(signal_conns)
-        n_gnd    = len(gnd_conns)
-
-        # SHORT faults: signal J1 pins that also pulled GND bus
-        short_faults = sorted(
-            [j1 for j1 in _j1_gnd if _j1_gnd[j1]],
-            key=lambda x: (x[0], int(x[1:]))
-        )
-
-        # Validate signal pairs for PASS/FAIL verdict
-        detected = {c.j1_pin: c.j2_pin for c in signal_conns}
-        missing_sig  = [j1 for j1, ej2 in EXPECTED_J1_TO_J2.items()
-                        if detected.get(j1) is None]
-        miswire_sig  = [f"J1.{j1}→got J2.{detected[j1]} exp J2.{ej2}"
-                        for j1, ej2 in EXPECTED_J1_TO_J2.items()
-                        if detected.get(j1) is not None and detected[j1] != ej2]
-        verdict     = "PASS" if not missing_sig and not miswire_sig and not short_faults else "FAIL"
-        verdict_clr = "1E8449" if verdict == "PASS" else "922B21"
-
-        # Update info cells with verdict
-        info_map["H7"]  = str(len(missing_sig))
-        info_map["H8"]  = str(len(miswire_sig) + len(short_faults))
-        info_map["H9"]  = verdict
-        for ref in ("H7","H8","H9"):
-            ws[ref] = info_map[ref]
-            ws[ref].font = Font(name='Arial', size=10)
-        ws["H9"].fill = self.fill(verdict_clr)
-        ws["H9"].font = Font(name='Arial', size=10, bold=True, color="FFFFFF")
-
-        # ── Result badge (matches screenshot) ────────────────────────────
-        result_cell = ws["B13"]
-        issues = len(missing_sig) + len(miswire_sig) + len(short_faults)
-        if verdict == "PASS":
-            result_cell.value = (
-                f"✓  PASS — {n_signal} signal pair(s) verified"
-                f"  |  GND bus: {n_gnd} connection(s)"
-            )
-        else:
-            result_cell.value = (
-                f"✗  FAIL — {issues} issue(s)"
-                f"  |  {n_signal} signal detected"
-                f"  |  GND bus: {n_gnd} conn"
-            )
-        result_cell.fill = self.fill(verdict_clr)
-        result_cell.font = Font(name='Arial', size=15, bold=True, color="FFFFFF")
-
-        # ── Connection rows ───────────────────────────────────────────────
-        # Layout per image:
-        #   Row 16 (header): # | J1 Pin | Pass Direction | J2 Pin
-        #   Row 17+: GND block (merged, lists all J1 GND + J2 GND pins)
-        #            then signal rows
-        START_ROW = 17
-        data_rows = max(n_signal + 20, 40)
-
-        for rng in list(ws.merged_cells.ranges):
-            if rng.min_row >= START_ROW - 1:
-                ws.unmerge_cells(str(rng))
-        for r in range(START_ROW - 1, START_ROW + data_rows):
-            for col in ["B","C","D","E","F","G","H","I","J","K"]:
-                ws[f"{col}{r}"].value = None
-
-        # ── Column header row ─────────────────────────────────────────────
-        HDR_ROW = START_ROW - 1
-        ws.row_dimensions[HDR_ROW].height = 22
-        ws.merge_cells(f"D{HDR_ROW}:J{HDR_ROW}")
-        for ref, val, align in [
-            (f"B{HDR_ROW}", "#",              "center"),
-            (f"C{HDR_ROW}", "J1 Pin",         "center"),
-            (f"D{HDR_ROW}", "Pass Direction", "center"),
-            (f"K{HDR_ROW}", "J2 Pin",         "center"),
-        ]:
-            c = ws[ref]
-            c.value = val
-            c.font  = Font(name='Arial', size=10, bold=True, color="FFFFFF")
-            c.fill  = self.fill("2E4F6F")
-            c.alignment = Alignment(horizontal=align, vertical='center')
-            c.border = self.thin("1A3A5C")
-
-        if not n_conn:
-            ws.row_dimensions[START_ROW].height = 24
-            ws.merge_cells(f"B{START_ROW}:K{START_ROW}")
-            c = ws[f"B{START_ROW}"]
-            c.value = "No connections detected"
-            c.font  = Font(name='Arial', size=11, bold=True, color="843C0C")
-            c.fill  = self.fill("FCE4D6")
-            c.alignment = Alignment(horizontal='center', vertical='center')
-            c.border = self.thin()
-        else:
-            row_idx = 0
-
-            # ── GND block: one merged cell group ─────────────────────────
-            # Collect all unique GND J1 and J2 pins from detected connections
-            gnd_j1_sorted = sorted(
-                {c.j1_pin for c in gnd_conns if c.j1_pin in GND_J1},
-                key=lambda x: (x[0], int(x[1:]))
-            )
-            gnd_j2_sorted = sorted(
-                {c.j2_pin for c in gnd_conns if c.j2_pin in GND_J2},
-                key=lambda x: (x[0], int(x[1:]))
-            )
-
-            # Build display strings — each connector row (A,B,C...) on its own line
-            def fmt_pin_list(pins, prefix):
-                from itertools import groupby
-                lines_out = []
-                for row_letter, group in groupby(pins, key=lambda x: x[0]):
-                    row_pins = list(group)
-                    lines_out.append(", ".join(f"{prefix}.{p}" for p in row_pins))
-                return "\n".join(lines_out)
-
-            j1_text = fmt_pin_list(gnd_j1_sorted, "J1")
-            j2_text = fmt_pin_list(gnd_j2_sorted, "J2")
-            combined_text = j1_text + ("\n" if j1_text and j2_text else "") + j2_text
-
-            # Calculate number of rows needed (one per text line, min 2)
-            n_lines = combined_text.count("\n") + 1
-            gnd_rows = max(n_lines + 1, 3)   # +1 for "GROUP" label line
-
-            GND_START = START_ROW + row_idx
-            GND_END   = GND_START + gnd_rows - 1
-
-            # Row number cell (spans all GND rows)
-            ws.merge_cells(f"B{GND_START}:B{GND_END}")
-            c = ws[f"B{GND_START}"]
-            c.value     = 1
-            c.font      = Font(name='Arial', size=10, bold=True, color="7D6608")
-            c.fill      = self.fill("FFFDE7")
-            c.alignment = Alignment(horizontal='center', vertical='center')
-            c.border    = self.thin("C9A227")
-
-            # J1 pin cell (spans all GND rows, left column)
-            ws.merge_cells(f"C{GND_START}:C{GND_END}")
-            c = ws[f"C{GND_START}"]
-            c.value     = ""   # blank — pins listed inside D:J merged block
-            c.fill      = self.fill("FFFDE7")
-            c.border    = self.thin("C9A227")
-
-            # Middle merged block D:J spanning all GND rows
-            ws.merge_cells(f"D{GND_START}:J{GND_END}")
-            c = ws[f"D{GND_START}"]
-            c.value     = "GROUP\n" + combined_text
-            c.font      = Font(name='Arial', size=10, color="7D6608")
-            c.fill      = self.fill("FFFDE7")
-            c.alignment = Alignment(horizontal='center', vertical='center',
-                                    wrap_text=True)
-            c.border    = self.thin("C9A227")
-
-            # J2 pin cell (spans all GND rows, right column)
-            ws.merge_cells(f"K{GND_START}:K{GND_END}")
-            c = ws[f"K{GND_START}"]
-            c.value     = ""   # blank — pins listed inside D:J merged block
-            c.fill      = self.fill("FFFDE7")
-            c.border    = self.thin("C9A227")
-
-            # Set row heights for GND block
-            row_height = max(15 * gnd_rows, 80)
-            for r in range(GND_START, GND_END + 1):
-                ws.row_dimensions[r].height = row_height / gnd_rows
-
-            row_idx += gnd_rows
-
-            # ── Signal rows ───────────────────────────────────────────────
-            for conn in signal_conns:
-                r  = START_ROW + row_idx
-                bg = "F2F7FF" if row_idx % 2 == 0 else "FFFFFF"
-                exp_j2 = EXPECTED_J1_TO_J2.get(conn.j1_pin)
-                if exp_j2 is None:
-                    row_clr = "FDEDEC"
-                    j2_val  = f"J2.{conn.j2_pin}  ⚠"
-                elif conn.j2_pin == exp_j2:
-                    row_clr = bg
-                    j2_val  = f"J2.{conn.j2_pin}  ✓"
-                else:
-                    row_clr = "F3E5F5"
-                    j2_val  = f"J2.{conn.j2_pin}  ✗ (exp J2.{exp_j2})"
-
-                ws.row_dimensions[r].height = 18
-                ws.merge_cells(f"D{r}:J{r}")
-                for ref, val, align in [
-                    (f"B{r}", row_idx + 1,          "center"),
-                    (f"C{r}", f"J1.{conn.j1_pin}",  "center"),
-                    (f"D{r}", "↔",                   "center"),
-                    (f"K{r}", j2_val,                "left"),
-                ]:
-                    c = ws[ref]
-                    c.value = val
-                    c.font  = Font(name='Arial', size=10)
-                    c.fill  = self.fill(row_clr)
-                    c.alignment = Alignment(horizontal=align, vertical='center')
-                    c.border = self.thin()
-                row_idx += 1
-
-            # ── Missing signal rows ───────────────────────────────────────
-            for j1 in missing_sig:
-                r = START_ROW + row_idx
-                ws.row_dimensions[r].height = 18
-                ws.merge_cells(f"D{r}:J{r}")
-                for ref, val, align in [
-                    (f"B{r}", row_idx + 1,                                    "center"),
-                    (f"C{r}", f"J1.{j1}",                                     "center"),
-                    (f"D{r}", "↔",                                             "center"),
-                    (f"K{r}", f"MISSING  (exp J2.{EXPECTED_J1_TO_J2[j1]})",   "left"),
-                ]:
-                    c = ws[ref]
-                    c.value = val
-                    c.font  = Font(name='Arial', size=10, bold=(ref.startswith("K")))
-                    c.fill  = self.fill("FDEDEC")
-                    c.alignment = Alignment(horizontal=align, vertical='center')
-                    c.border = self.thin("E57373")
-                row_idx += 1
-
-            # ── SHORT fault rows ──────────────────────────────────────────
-            for j1 in short_faults:
-                r = START_ROW + row_idx
-                ws.row_dimensions[r].height = 18
-                ws.merge_cells(f"D{r}:J{r}")
-                for ref, val, align in [
-                    (f"B{r}", row_idx + 1,                                         "center"),
-                    (f"C{r}", f"J1.{j1}",                                          "center"),
-                    (f"D{r}", "⚡ SHORT",                                           "center"),
-                    (f"K{r}", f"SHORT to GND bus  (J1.{j1} bridged to GND)",       "left"),
-                ]:
-                    c = ws[ref]
-                    c.value = val
-                    c.font  = Font(name='Arial', size=10,
-                                   bold=True, color=("FFFFFF" if ref.startswith("D") else "C0392B"))
-                    c.fill  = self.fill("C0392B" if ref.startswith("D") else "FDEDEC")
-                    c.alignment = Alignment(horizontal=align, vertical='center')
-                    c.border = self.thin("C0392B")
-                row_idx += 1
-
-        end_r = START_ROW + max(row_idx if n_conn else 1, 1) + 2
-        ws.merge_cells(f"B{end_r}:K{end_r}")
-        ws[f"B{end_r}"].value = (
-            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            "  |  Cable Jig Tester PC Software"
-        )
-        ws[f"B{end_r}"].font      = Font(name='Arial', size=9, color="888888", italic=True)
-        ws[f"B{end_r}"].alignment = Alignment(horizontal='center', vertical='center')
-
-        # ── Test History sheet ────────────────────────────────────────────
-        try:
-            ws2 = wb["Test History"]
-            next_row = 3
-            for row in ws2.iter_rows(min_row=3):
-                if row[0].value is not None:
-                    next_row = row[0].row + 1
-                else:
-                    break
-            ws2.row_dimensions[next_row].height = 20
-            bg = "F2F7FF" if next_row % 2 == 0 else "FFFFFF"
-            hist_data = [
-                next_row - 2,
-                result.timestamp.strftime("%Y-%m-%d"),
-                result.timestamp.strftime("%H:%M:%S"),
-                result.serial_number,
-                "—",
-                "—",
-                result.total_pins,
-                n_conn,
-                "—", "—", "—",
-                "DONE",
-            ]
-            for ci, val in enumerate(hist_data, 1):
-                c = ws2.cell(next_row, ci, val)
-                c.font  = Font(name='Arial', size=10)
-                c.fill  = PatternFill("solid", fgColor=bg)
-                c.alignment = Alignment(horizontal='center', vertical='center')
-                c.border = self.thin()
-        except Exception:
-            pass
-
-        # ── Connection Map sheet ──────────────────────────────────────────
-        try:
-            if "Connection Map" in wb.sheetnames:
-                del wb["Connection Map"]
-            wm = wb.create_sheet("Connection Map")
-            wm.sheet_view.showGridLines = False
-
-            wm.merge_cells("A1:E1")
-            wm["A1"].value = (
-                f"Connection Map — S/N: {result.serial_number}"
-                f"  |  {n_signal} signal pair(s)  +  {len(gnd_j1_sorted)} GND pin(s)"
-            )
-            wm["A1"].font  = Font(name='Arial', size=13, bold=True, color="FFFFFF")
-            wm["A1"].fill  = self.fill(verdict_clr)
-            wm["A1"].alignment = Alignment(horizontal='center', vertical='center')
-            wm.row_dimensions[1].height = 28
-
-            for col, hdr, w in zip("ABCDE",
-                                   ["#", "J1 Pin", "Pass Direction", "J2 Pin", "Status"],
-                                   [5, 14, 40, 14, 14]):
-                c = wm[f"{col}2"]
-                c.value = hdr
-                c.font  = Font(name='Arial', size=10, bold=True, color="FFFFFF")
-                c.fill  = self.fill("2E4F6F")
-                c.alignment = Alignment(horizontal='center', vertical='center')
-                c.border = self.thin()
-                wm.column_dimensions[col].width = w
-            wm.row_dimensions[2].height = 22
-
-            cm_row = 3
-            # GND block — one merged cell group in column C (Pass Direction)
-            n_gnd_lines = combined_text.count("\n") + 1
-            gnd_blk = max(n_gnd_lines + 1, 3)
-            GND_END_CM = cm_row + gnd_blk - 1
-
-            wm.merge_cells(f"A{cm_row}:A{GND_END_CM}")
-            c = wm[f"A{cm_row}"]
-            c.value = 1; c.font = Font(name='Arial',size=10,bold=True,color="7D6608")
-            c.fill = self.fill("FFFDE7")
-            c.alignment = Alignment(horizontal='center',vertical='center')
-            c.border = self.thin("C9A227")
-
-            wm.merge_cells(f"B{cm_row}:B{GND_END_CM}")
-            c = wm[f"B{cm_row}"]
-            c.value = ""; c.fill = self.fill("FFFDE7"); c.border = self.thin("C9A227")
-
-            wm.merge_cells(f"C{cm_row}:C{GND_END_CM}")
-            c = wm[f"C{cm_row}"]
-            c.value = "GROUP\n" + combined_text
-            c.font  = Font(name='Arial', size=10, color="7D6608")
-            c.fill  = self.fill("FFFDE7")
-            c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-            c.border = self.thin("C9A227")
-
-            wm.merge_cells(f"D{cm_row}:D{GND_END_CM}")
-            c = wm[f"D{cm_row}"]
-            c.value = ""; c.fill = self.fill("FFFDE7"); c.border = self.thin("C9A227")
-
-            wm.merge_cells(f"E{cm_row}:E{GND_END_CM}")
-            c = wm[f"E{cm_row}"]
-            c.value = "GND"; c.font = Font(name='Arial',size=10,bold=True,color="7D6608")
-            c.fill = self.fill("FFFDE7")
-            c.alignment = Alignment(horizontal='center',vertical='center')
-            c.border = self.thin("C9A227")
-
-            rh = max(15 * gnd_blk, 80) / gnd_blk
-            for r in range(cm_row, GND_END_CM + 1):
-                wm.row_dimensions[r].height = rh
-            cm_row = GND_END_CM + 1
-
-            # Signal rows
-            for idx, conn in enumerate(signal_conns, 2):
-                bg = "F2F7FF" if idx % 2 == 0 else "FFFFFF"
-                exp_j2 = EXPECTED_J1_TO_J2.get(conn.j1_pin)
-                if exp_j2 is None:
-                    status, bg = "⚠ Unexpected", "FDEDEC"
-                elif conn.j2_pin == exp_j2:
-                    status = "✓ OK"
-                else:
-                    status, bg = f"✗ exp J2.{exp_j2}", "F3E5F5"
-                wm.row_dimensions[cm_row].height = 18
-                for col, val, align in zip("ABCDE",
-                    [idx, f"J1.{conn.j1_pin}", "↔", f"J2.{conn.j2_pin}", status],
-                    ["center","center","center","center","left"]):
-                    c = wm[f"{col}{cm_row}"]
-                    c.value = val
-                    c.font  = Font(name='Arial', size=10)
-                    c.fill  = self.fill(bg)
-                    c.alignment = Alignment(horizontal=align, vertical='center')
-                    c.border = self.thin()
-                cm_row += 1
-
-            # Missing rows
-            for j1 in missing_sig:
-                wm.row_dimensions[cm_row].height = 18
-                for col, val, align in zip("ABCDE",
-                    [cm_row-2, f"J1.{j1}", "↔",
-                     f"J2.{EXPECTED_J1_TO_J2[j1]}", "✗ MISSING"],
-                    ["center","center","center","center","left"]):
-                    c = wm[f"{col}{cm_row}"]
-                    c.value = val
-                    c.font  = Font(name='Arial', size=10,
-                                   bold=(col=="E"), color=("C0392B" if col=="E" else "000000"))
-                    c.fill  = self.fill("FDEDEC")
-                    c.alignment = Alignment(horizontal=align, vertical='center')
-                    c.border = self.thin("E57373")
-                cm_row += 1
-
-        except Exception:
-            pass
-
-        wb.save(out_path)
-        return out_path
+    def compare(self, measured_edges):
+        exp = set(self.edges); meas = set(measured_edges)
+        opens  = sorted(exp - meas)
+        extras = sorted(meas - exp)
+        return {"verdict": "PASS" if not opens and not extras else "FAIL",
+                "opens": opens, "extras": extras,
+                "n_expected": len(exp), "n_measured": len(meas),
+                "n_ok": len(exp & meas)}
 
 
-# ── Serial Reader Thread ──────────────────────────────────────────────────
+def _profile_path(name):
+    safe = "".join(ch if ch.isalnum() or ch in "-_ ." else "_" for ch in name).strip()
+    return Path(PROFILE_DIR) / f"{safe or 'cable'}.json"
+
+def save_profile(profile):
+    Path(PROFILE_DIR).mkdir(exist_ok=True)
+    p = _profile_path(profile.name)
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(profile.to_dict(), f, indent=2, ensure_ascii=False)
+    return p
+
+def list_profiles():
+    d = Path(PROFILE_DIR); out = {}
+    if d.exists():
+        for fp in sorted(d.glob("*.json")):
+            try:
+                with open(fp, encoding="utf-8") as f:
+                    out[json.load(f).get("name", fp.stem)] = fp
+            except Exception:
+                pass
+    return out
+
+def load_profile(path):
+    with open(path, encoding="utf-8") as f:
+        return CableProfile.from_dict(json.load(f))
+
+
+DEFAULT_PROFILE_NAME = "Default cable (66 signal + GND bus)"
+
+def _build_default_profile():
+    """The original 116-pin cable, defined once as the seed of a profile."""
+    signal = {
+        "A1":"D1",
+        "A3":"D3",
+        "A5":"D5",
+        "A7":"D7",
+        "A9":"D9",
+        "A11":"D11",
+        "A13":"D13",
+        "A15":"D15",
+        "A17":"D17",
+        "B2":"C2",
+        "B4":"C4",
+        "B6":"C6",
+        "B8":"C8",
+        "B10":"C10",
+        "B12":"C12",
+        "B14":"C14",
+        "B16":"C16",
+        "C1":"B1",
+        "C3":"B3",
+        "C5":"B5",
+        "C7":"B7",
+        "C9":"B9",
+        "C11":"B11",
+        "C13":"B13",
+        "C15":"B15",
+        "C17":"B17",
+        "D2":"A2",
+        "D4":"A4",
+        "D6":"A6",
+        "D8":"A8",
+        "D10":"A10",
+        "D12":"A12",
+        "D14":"A14",
+        "D16":"A16",
+        "E2":"G2",
+        "E4":"G4",
+        "E6":"G6",
+        "E8":"G8",
+        "E10":"G10",
+        "E12":"G12",
+        "E14":"G14",
+        "E16":"G16",
+        "F1":"F1",
+        "F2":"F2",
+        "F3":"F3",
+        "F4":"F4",
+        "F5":"F5",
+        "F6":"F6",
+        "F7":"F7",
+        "F8":"F8",
+        "F9":"F9",
+        "F10":"F10",
+        "F11":"F11",
+        "F12":"F12",
+        "F13":"F13",
+        "F14":"F14",
+        "F15":"F15",
+        "F16":"F16",
+        "G1":"E1",
+        "G3":"E3",
+        "G5":"E5",
+        "G7":"E7",
+        "G9":"E9",
+        "G11":"E11",
+        "G13":"E13",
+        "G15":"E15"
+    }
+    gnd_j1 = ["A10", "A12", "A14", "A16", "A2", "A4", "A6", "A8", "B1", "B11", "B13", "B15", "B17", "B3", "B5", "B7", "B9", "C10", "C12", "C14", "C16", "C2", "C4", "C6", "C8", "D1", "D11", "D13", "D15", "D17", "D3", "D5", "D7", "D9", "E1", "E11", "E13", "E15", "E3", "E5", "E7", "E9", "G10", "G12", "G14", "G16", "G2", "G4", "G6", "G8"]
+    gnd_j2 = ["A1", "A11", "A13", "A15", "A17", "A3", "A5", "A7", "A9", "B10", "B12", "B14", "B16", "B2", "B4", "B6", "B8", "C1", "C11", "C13", "C15", "C17", "C3", "C5", "C7", "C9", "D10", "D12", "D14", "D16", "D2", "D4", "D6", "D8", "E10", "E12", "E14", "E16", "E2", "E4", "E6", "E8", "G1", "G11", "G13", "G15", "G3", "G5", "G7", "G9"]
+    edges = set(signal.items()) | {(a, b) for a in gnd_j1 for b in gnd_j2}
+    return CableProfile(name=DEFAULT_PROFILE_NAME, edges=edges,
+                        notes="Built-in original cable")
+
+DEFAULT_PROFILE = _build_default_profile()
+
+
+
 class SerialReader(threading.Thread):
     def __init__(self, port, baud, rx_queue, stop_event):
         super().__init__(daemon=True)
@@ -686,10 +371,15 @@ class App(tk.Tk):
         # GND grouping state
         self._gnd_tree_id:          Optional[str]       = None
         self._gnd_count:            int                 = 0
+        # Cable profile (multi-cable support)
+        self.active_profile             = DEFAULT_PROFILE
+        self._profile_paths:    dict    = {}      # name -> path
+        self._last_profile_result       = None    # last netlist compare result
 
         self._build_ui()
         self._load_history()
         self._refresh_ports()
+        self._refresh_profiles()
         self._poll_queue()
 
     # ── UI Build ──────────────────────────────────────────────────────────
@@ -855,6 +545,34 @@ class App(tk.Tk):
                                          fg=CLR_IDLE, bg=CLR_CARD,
                                          font=("Arial",10,"bold"))
         self.lbl_conn_status.pack(side="left")
+
+        # -- Cable type card --
+        cab = self._card(parent, "CABLE TYPE")
+        cab.pack(fill="x", padx=6, pady=4)
+        rowp = tk.Frame(cab, bg=CLR_CARD); rowp.pack(fill="x", pady=3)
+        tk.Label(rowp, text="Profile:", fg=CLR_MUTED, bg=CLR_CARD,
+                 font=("Arial",10), width=7, anchor="w").pack(side="left")
+        self.var_profile = tk.StringVar(value=DEFAULT_PROFILE_NAME)
+        self.cb_profile = ttk.Combobox(rowp, textvariable=self.var_profile,
+                                       width=22, font=("Arial",9), state="readonly")
+        self.cb_profile.pack(side="left", padx=4)
+        self.cb_profile.bind("<<ComboboxSelected>>", self._on_profile_select)
+        tk.Button(rowp, text="⟳", command=self._refresh_profiles,
+                  bg=CLR_PANEL, fg=CLR_TEXT, font=("Arial",11),
+                  relief="flat", cursor="hand2", padx=6).pack(side="left")
+        self.btn_learn = tk.Button(cab, text="📚  Learn current cable as profile",
+                                   command=self._learn_profile,
+                                   bg="#117A65", fg="white",
+                                   disabledforeground="#ABEBC6",
+                                   font=("Arial",9,"bold"),
+                                   relief="flat", cursor="hand2", padx=10, pady=5,
+                                   state="disabled")
+        self.btn_learn.pack(fill="x", pady=(2,0))
+        self.lbl_profile_info = tk.Label(cab,
+                 text="Default: built-in map (66 signal pairs + GND bus)",
+                 fg="#BDC3C7", bg=CLR_CARD, font=("Arial",8),
+                 wraplength=240, justify="left")
+        self.lbl_profile_info.pack(fill="x", pady=(2,0))
 
         # ── Test control card ──
         ctl = self._card(parent, "TEST CONTROL")
@@ -1164,7 +882,7 @@ class App(tk.Tk):
         self.serial_reader.send("I")
 
     def _run_jig_diag(self):
-        """Send 'J' — scan tất cả 116 J1 pin, báo cáo pin không có connection."""
+        """Send 'J' — scan all 116 J1 pins, report pins with no connection."""
         if not self.serial_reader:
             messagebox.showwarning("Not Connected", "Connect to tester first.")
             return
@@ -1214,7 +932,7 @@ class App(tk.Tk):
         self.serial_reader.send("G")
 
     def _run_fdiag(self):
-        """Send 'F' — debug J1.F even pins (F2,F4,...,F16) → hiện rp thực và J2 label."""
+        """Send 'F' — debug J1.F even pins (F2,F4,...,F16) → show actual rp and J2 label."""
         if not self.serial_reader:
             messagebox.showwarning("Not Connected", "Connect to tester first.")
             return
@@ -1454,7 +1172,7 @@ class App(tk.Tk):
                 self._log(f"[I2C2] {addr_str} : NACK  —{note}")
 
         elif tag == "I2C_PROBE" and len(parts) >= 3:
-            # backward compat với firmware cũ (trước khi tách I2C2)
+            # backward compat with old firmware (before I2C2 was split out)
             addr_str = parts[1]
             result   = parts[2]
             try:
@@ -1507,7 +1225,7 @@ class App(tk.Tk):
                 return int(s) if s.lstrip("-").isdigit() else -1
             mi_i, ch_i, lat_i = _toint(mi_s), _toint(ch_s), _toint(lat_s)
             out0_i, out1_i    = _toint(out0_s), _toint(out1_s)
-            # Kiểm tra I2C_ERR token (firmware output ",I2C_ERR" thay OUT0/OUT1)
+            # Check I2C_ERR token (firmware outputs ",I2C_ERR" instead of OUT0/OUT1)
             has_i2c_err = any("I2C_ERR" in p for p in parts[2:])
             # Store structured result for analysis
             self._jig_results_all.append(JigPinResult(
@@ -1549,9 +1267,9 @@ class App(tk.Tk):
             mi_val = parts[1].replace("mi=", "")
             n_hit  = self._sweep_hit_count
             if n_hit == 0:
-                self._log(f"[JIG]     ─── group {mi_val}: 0 hits → IC chết hoặc Z-line đứt")
+                self._log(f"[JIG]     ─── group {mi_val}: 0 hits → IC dead or Z-line broken")
             else:
-                self._log(f"[JIG]     ─── group {mi_val}: {n_hit} ch OK, còn lại dead → trace đứt")
+                self._log(f"[JIG]     ─── group {mi_val}: {n_hit} ch OK, rest dead → trace broken")
             self._sweep_mi        = None
             self._sweep_hit_count = 0
 
@@ -1624,9 +1342,9 @@ class App(tk.Tk):
             mi_val = parts[1].replace("mi=", "")
             n_hit  = self._sweep_j2_hit_count
             if n_hit == 0:
-                self._log(f"[J2]      ─── group {mi_val}: 0 hits → IC chết hoặc Z-line đứt")
+                self._log(f"[J2]      ─── group {mi_val}: 0 hits → IC dead or Z-line broken")
             else:
-                self._log(f"[J2]      ─── group {mi_val}: {n_hit} ch OK, còn lại dead → trace đứt")
+                self._log(f"[J2]      ─── group {mi_val}: {n_hit} ch OK, rest dead → trace broken")
             self._sweep_j2_mi        = None
             self._sweep_j2_hit_count = 0
 
@@ -1669,7 +1387,7 @@ class App(tk.Tk):
                         self._log(f"[JIG]          → {r.recommendation}")
             self._log("[JIG] ══════════════════════════════════════")
             if fail_n == 0:
-                self._status("Jig diagnostic: J1+J2 tất cả OK ✓")
+                self._status("Jig diagnostic: J1+J2 all OK ✓")
             else:
                 self._status(f"Jig diagnostic: J1={j1_n} fail, J2={j2_n} fail")
 
@@ -1682,8 +1400,8 @@ class App(tk.Tk):
             # ── Popup ──────────────────────────────────────────────────────
             if fail_n == 0:
                 messagebox.showinfo("Jig Self-Diagnostic",
-                                    "✓  Tất cả 116 pin J1 + 116 pin J2 đều OK!\n"
-                                    "Jig hardware hoàn toàn bình thường.")
+                                    "✓  All 116 J1 pins + 116 J2 pins OK!\n"
+                                    "Jig hardware is completely normal.")
             else:
                 rows_j1 = [r for r in self._jig_results_all       if r.status == "FAIL"]
                 rows_j2 = [r for r in self._jig_j2_results_all    if r.status == "FAIL"]
@@ -1697,9 +1415,9 @@ class App(tk.Tk):
                 if rows_j2:
                     body += f"J2 ({j2_n} pin):\n{detail_j2}\n\n"
                 messagebox.showwarning(
-                    "Jig Self-Diagnostic — Phân tích nguyên nhân",
-                    f"Tổng cộng {fail_n} pin thất bại:\n\n{body}"
-                    "Nhấn 'Export Jig Report' để lưu báo cáo Excel đầy đủ."
+                    "Jig Self-Diagnostic — Root Cause Analysis",
+                    f"Total {fail_n} pin(s) failed:\n\n{body}"
+                    "Click 'Export Jig Report' to save the full Excel report."
                 )
 
         elif tag == "J2G0_START":
@@ -1718,7 +1436,7 @@ class App(tk.Tk):
 
         elif tag == "J2G0_END":
             connected = [(rp, j1) for rp, j1 in self._j2g0_rows if j1 != "NO_CONN"]
-            self._log(f"[J2G0] {len(connected)}/16 channels có kết nối J1")
+            self._log(f"[J2G0] {len(connected)}/16 channels connected to J1")
             self._log("[J2G0] ══════════════════════════════")
             if hasattr(self, "btn_j2g0"):
                 self.btn_j2g0.config(state="normal")
@@ -1743,33 +1461,33 @@ class App(tk.Tk):
         elif tag == "FDIAG_END":
             ok  = sum(1 for r in self._fdiag_rows if r[3] == "OK")
             nok = sum(1 for r in self._fdiag_rows if r[3] == "FAIL")
-            self._log(f"[FDIAG] Kết quả: {ok} OK, {nok} NO_CONN")
+            self._log(f"[FDIAG] Result: {ok} OK, {nok} NO_CONN")
             self._log("[FDIAG] ══════════════════════════════")
             if nok:
                 fails = ", ".join(f"J1.F{r[0]}" for r in self._fdiag_rows if r[3]=="FAIL")
                 messagebox.showwarning("F-Row Debug",
-                    f"{nok} pin không tìm thấy kết nối J2:\n{fails}\n\n"
-                    "Kiểm tra PCB J2 MUX-B nhóm 0 (rp=0..15).")
+                    f"{nok} pin(s) with no J2 connection:\n{fails}\n\n"
+                    "Check PCB J2 MUX-B group 0 (rp=0..15).")
             if hasattr(self, "btn_fdiag"):
                 self.btn_fdiag.config(state="normal")
 
         elif tag == "JIG_DIAG_I2C_ERR":
             drv = parts[1].replace("drv=", "") if len(parts) >= 2 else "?"
-            self._log(f"[JIG] ⚠  I2C error J1 (drv={drv}) — pin bị bỏ qua")
+            self._log(f"[JIG] ⚠  I2C error J1 (drv={drv}) — pin skipped")
 
         elif tag == "JIG_DIAG_J2_I2C_ERR":
             drv = parts[1].replace("drv=", "") if len(parts) >= 2 else "?"
-            self._log(f"[JIG] ⚠  I2C error J2 (drv={drv}) — pin bị bỏ qua")
+            self._log(f"[JIG] ⚠  I2C error J2 (drv={drv}) — pin skipped")
 
         elif tag == "SWEEP_I2C_ERR":
             ch = parts[1].replace("ch=", "") if len(parts) >= 2 else "?"
-            self._log(f"[JIG] ⚠  I2C error trong sweep J1 (ch={ch}) — dừng sweep")
+            self._log(f"[JIG] ⚠  I2C error in sweep J1 (ch={ch}) — sweep stopped")
             if hasattr(self, "btn_jig_diag"):
                 self.btn_jig_diag.config(state="normal")
 
         elif tag == "SWEEP_J2_I2C_ERR":
             ch = parts[1].replace("ch=", "") if len(parts) >= 2 else "?"
-            self._log(f"[JIG] ⚠  I2C error trong sweep J2 (ch={ch}) — dừng sweep")
+            self._log(f"[JIG] ⚠  I2C error in sweep J2 (ch={ch}) — sweep stopped")
             if hasattr(self, "btn_jig_diag"):
                 self.btn_jig_diag.config(state="normal")
 
@@ -1801,26 +1519,28 @@ class App(tk.Tk):
 
     def _add_conn_row(self, conn: ConnectionRecord):
         j1, j2 = conn.j1_pin, conn.j2_pin
+        prof = self.active_profile or DEFAULT_PROFILE
+        _g1, _g2, _exp = prof.gnd_j1(), prof.gnd_j2(), prof.signal_map()
 
-        # GND net — collapse to one summary row
-        if j1 in GND_J1 or j2 in GND_J2:
+        # GND/bus net — collapse to one summary row
+        if j1 in _g1 or j2 in _g2:
             self._gnd_count += 1
             if self._gnd_tree_id is None:
                 idx = len(self.tree.get_children()) + 1
                 self._gnd_tree_id = self.tree.insert(
                     "", "end",
-                    values=(idx, "GND bus", f"GND — {self._gnd_count} kết nối"),
+                    values=(idx, "GND bus", f"GND — {self._gnd_count} connection(s)"),
                     tags=("gnd",))
             else:
                 vals = self.tree.item(self._gnd_tree_id, "values")
                 self.tree.item(self._gnd_tree_id,
                                values=(vals[0], "GND bus",
-                                       f"GND — {self._gnd_count} kết nối"))
+                                       f"GND — {self._gnd_count} connection(s)"))
             return
 
         # Signal connection — validate
         idx = len(self.tree.get_children()) + 1
-        expected_j2 = EXPECTED_J1_TO_J2.get(j1)
+        expected_j2 = _exp.get(j1)
         if expected_j2 is None:
             tag_name = "unexpected"
             j2_disp  = f"J2.{j2}  ⚠ unexpected"
@@ -1843,11 +1563,6 @@ class App(tk.Tk):
         self.progress.config(mode="determinate")
         self.progress_var.set(100)
 
-        n = 0
-        missing_signals: list = []
-        miswire_signals: list = []
-        short_signals: list = []
-
         if self.current_result:
             self.current_result.completed = True
             if self.test_start_time:
@@ -1856,74 +1571,12 @@ class App(tk.Tk):
             self.history.append(self.current_result)
             self._save_history()
             self._update_stats()
-
-            # ── Build signal detection with SHORT fault detection ─────────
-            # For each signal J1 pin:
-            #   - Collect its non-GND J2 hits (the cable signal connections)
-            #   - Check if it also has GND_J2 hits (= shorted to GND bus)
-            # Use same skip-GND logic as generate() for signal classification,
-            # but additionally flag pins that appear in BOTH GND and signal hits.
-
-            # Group connections by J1 pin
-            from collections import defaultdict
-            j1_gnd_hits  = defaultdict(list)  # signal J1 pins that also hit GND J2
-            j1_sig_hits  = defaultdict(list)  # signal J1 pins → their signal J2 hits
-
-            for c in self.current_result.connections:
-                if c.j1_pin in GND_J1:
-                    continue
-                if c.j2_pin in GND_J2:
-                    j1_gnd_hits[c.j1_pin].append(c.j2_pin)  # GND hit on a signal J1 pin
-                else:
-                    j1_sig_hits[c.j1_pin].append(c.j2_pin)  # real signal hit
-
-            # Build detected: first signal hit per J1 pin
-            detected: dict = {}
-            for j1, hits in j1_sig_hits.items():
-                if hits:
-                    detected[j1] = hits[0]
-
-            # Detect SHORT faults: signal J1 pin also pulled GND bus
-            short_signals: list = []
-            for j1 in sorted(j1_gnd_hits.keys(), key=lambda x:(x[0],int(x[1:]))):
-                if j1_gnd_hits[j1]:  # has GND hits = shorted to GND bus
-                    # Find which GND J1 pin it's shorted to (same row, adjacent pin)
-                    short_signals.append(f"J1.{j1} shorted to GND bus")
-            for j1, exp_j2 in EXPECTED_J1_TO_J2.items():
-                got = detected.get(j1)
-                if got is None:
-                    missing_signals.append(f"J1.{j1}→J2.{exp_j2}")
-                elif got != exp_j2:
-                    miswire_signals.append(f"J1.{j1}: got J2.{got} exp J2.{exp_j2}")
-
-        short_count  = len(short_signals)
-        pass_ok = not missing_signals and not miswire_signals and not short_signals
-        if pass_ok:
-            self.result_frame.config(bg=CLR_PASS)
-            self.lbl_result.config(text=f"✓  PASS — {n} connection(s) verified", bg=CLR_PASS)
-            self._status(f"PASS — {n} connections OK — press Export to save")
+            self._finish_with_profile(n)
         else:
-            issues = len(missing_signals) + len(miswire_signals) + short_count
-            self.result_frame.config(bg=CLR_FAIL)
-            self.lbl_result.config(text=f"✗  FAIL — {issues} issue(s) — check log", bg=CLR_FAIL)
-            self._status(f"FAIL — {issues} issue(s) detected")
-            if short_signals:
-                self._log(f"[RESULT] SHORT ({short_count}): "
-                          + ", ".join(short_signals[:10])
-                          + (" …" if short_count > 10 else ""))
-            if missing_signals:
-                self._log(f"[RESULT] MISSING ({len(missing_signals)}): "
-                          + ", ".join(missing_signals[:10])
-                          + (" …" if len(missing_signals) > 10 else ""))
-            if miswire_signals:
-                self._log(f"[RESULT] MISWIRE ({len(miswire_signals)}): "
-                          + ", ".join(miswire_signals[:10])
-                          + (" …" if len(miswire_signals) > 10 else ""))
+            self.btn_test.config(state="normal")
+            self.btn_stop.config(state="disabled", bg="#7F8C8D")
 
-        self.btn_test.config(state="normal")
-        self.btn_stop.config(state="disabled", bg="#7F8C8D")
-        self.btn_export.config(state="normal" if EXCEL_OK else "disabled")
-
+    def _increment_sn(self):
         sn = self.var_sn.get()
         try:
             prefix = sn.rstrip("0123456789")
@@ -1931,6 +1584,193 @@ class App(tk.Tk):
             self.var_sn.set(f"{prefix}{num:06d}")
         except Exception:
             pass
+
+    # -- Cable profile management ------------------------------------------
+    def _refresh_profiles(self):
+        self._profile_paths = list_profiles()
+        names = [DEFAULT_PROFILE_NAME] + list(self._profile_paths.keys())
+        self.cb_profile["values"] = names
+        if self.var_profile.get() not in names:
+            self.var_profile.set(DEFAULT_PROFILE_NAME)
+            self.active_profile = DEFAULT_PROFILE
+
+    def _on_profile_select(self, event=None):
+        name = self.var_profile.get()
+        if name == DEFAULT_PROFILE_NAME or name not in self._profile_paths:
+            self.active_profile = DEFAULT_PROFILE
+            self.lbl_profile_info.config(
+                text=f"{DEFAULT_PROFILE_NAME}: {len(DEFAULT_PROFILE.signal_map())} signal + "
+                     f"GND bus ({len(DEFAULT_PROFILE.gnd_j1())}/{len(DEFAULT_PROFILE.gnd_j2())})")
+            return
+        try:
+            prof = load_profile(self._profile_paths[name])
+            self.active_profile = prof
+            self.lbl_profile_info.config(
+                text=f"{prof.name}: {len(prof.edges)} expected connections, "
+                     f"{prof.total_pins} pins")
+            self._status(f"Cable profile: {prof.name}")
+        except Exception as e:
+            messagebox.showerror("Profile", f"Could not load profile: {e}")
+            self.active_profile = DEFAULT_PROFILE
+
+    def _learn_profile(self):
+        from tkinter import simpledialog
+        if not self.current_result or not self.current_result.connections:
+            messagebox.showinfo("Learn cable",
+                                "Run a test with a known-good cable first.")
+            return
+        name = simpledialog.askstring(
+            "Learn cable", "Cable type name (profile):",
+            initialvalue=f"Cable_{datetime.now():%Y%m%d_%H%M}")
+        if not name:
+            return
+        prof = CableProfile.from_connections(
+            name, self.current_result.connections,
+            notes=f"Learned from S/N {self.current_result.serial_number}")
+        prof.total_pins = self.current_result.total_pins or TOTAL_PINS
+        try:
+            p = save_profile(prof)
+        except Exception as e:
+            messagebox.showerror("Learn cable", f"Save failed: {e}")
+            return
+        self._refresh_profiles()
+        self.var_profile.set(prof.name)
+        self._on_profile_select()
+        self._log(f"[PROFILE] Saved '{prof.name}' ({len(prof.edges)} connections) -> {p}")
+        messagebox.showinfo(
+            "Learn cable",
+            f"Profile '{prof.name}' saved\n{len(prof.edges)} expected connections.\n\n"
+            "Select this profile next time to test this cable type.")
+
+    def _finish_with_profile(self, n):
+        prof = self.active_profile
+        measured = {(c.j1_pin, c.j2_pin) for c in self.current_result.connections}
+        res = prof.compare(measured)
+        self._last_profile_result = res
+        opens, extras = res["opens"], res["extras"]
+        if res["verdict"] == "PASS":
+            self.result_frame.config(bg=CLR_PASS)
+            self.lbl_result.config(
+                text=f"PASS - {prof.name} - {res['n_ok']}/{res['n_expected']} connections",
+                bg=CLR_PASS)
+            self._status(f"PASS [{prof.name}] - {res['n_ok']}/{res['n_expected']} OK")
+        else:
+            issues = len(opens) + len(extras)
+            self.result_frame.config(bg=CLR_FAIL)
+            self.lbl_result.config(
+                text=f"FAIL - {issues} fault(s) ({len(opens)} OPEN, {len(extras)} SHORT/wrong)",
+                bg=CLR_FAIL)
+            self._status(f"FAIL [{prof.name}] - {len(opens)} OPEN, {len(extras)} SHORT/wrong")
+            if opens:
+                self._log("[RESULT] OPEN (" + str(len(opens)) + "): "
+                          + ", ".join(f"J1.{a}<->J2.{b}" for a, b in opens[:12])
+                          + (" ..." if len(opens) > 12 else ""))
+            if extras:
+                self._log("[RESULT] SHORT/WRONG (" + str(len(extras)) + "): "
+                          + ", ".join(f"J1.{a}<->J2.{b}" for a, b in extras[:12])
+                          + (" ..." if len(extras) > 12 else ""))
+        self.btn_test.config(state="normal")
+        self.btn_stop.config(state="disabled", bg="#7F8C8D")
+        self.btn_export.config(state="normal" if EXCEL_OK else "disabled")
+        if hasattr(self, "btn_learn"):
+            self.btn_learn.config(state="normal")
+        self._increment_sn()
+
+    def _export_profile_report(self):
+        if not EXCEL_OK:
+            messagebox.showerror("Missing Library", "openpyxl is not installed.")
+            return
+        if not self.current_result or self._last_profile_result is None:
+            messagebox.showinfo("No Data", "No profile test result yet.")
+            return
+        from openpyxl import Workbook
+        res = self._last_profile_result
+        prof = self.active_profile
+        thinb = Side(style="thin", color="BFBFBF")
+        bd = Border(left=thinb, right=thinb, top=thinb, bottom=thinb)
+        def FNT(sz=10, b=False, c="000000"):
+            return Font(name="Arial", size=sz, bold=b, color=c)
+        def FILL(c):
+            return PatternFill("solid", fgColor=c)
+        AL = Alignment(horizontal="center", vertical="center")
+        wb = Workbook()
+        ws = wb.active; ws.title = "Summary"; ws.sheet_view.showGridLines = False
+        verdict = res["verdict"]; vclr = "1E8449" if verdict == "PASS" else "922B21"
+        ws.merge_cells("A1:D1")
+        ws["A1"] = f"CABLE TEST - {prof.name}"
+        ws["A1"].font = FNT(15, True, "FFFFFF"); ws["A1"].fill = FILL("1F3864")
+        ws["A1"].alignment = AL; ws.row_dimensions[1].height = 30
+        info = [("Serial Number", self.current_result.serial_number),
+                ("Profile", prof.name),
+                ("Date", self.current_result.timestamp.strftime("%Y-%m-%d %H:%M:%S")),
+                ("COM Port", self.current_result.com_port),
+                ("Expected connections", res["n_expected"]),
+                ("Measured connections", res["n_measured"]),
+                ("Matched", res["n_ok"]),
+                ("OPEN (broken)", len(res["opens"])),
+                ("SHORT/wrong", len(res["extras"])),
+                ("VERDICT", verdict)]
+        r = 3
+        for k, v in info:
+            ws[f"A{r}"] = k; ws[f"A{r}"].font = FNT(10, True); ws[f"A{r}"].border = bd
+            ws.merge_cells(f"B{r}:D{r}")
+            cb = ws[f"B{r}"]; cb.value = v; cb.border = bd
+            if k == "VERDICT":
+                cb.fill = FILL(vclr); cb.font = FNT(11, True, "FFFFFF")
+            else:
+                cb.font = FNT(10)
+            r += 1
+        ws.column_dimensions["A"].width = 20
+        for col in "BCD":
+            ws.column_dimensions[col].width = 16
+        wf = wb.create_sheet("Faults"); wf.sheet_view.showGridLines = False
+        for ci, h in enumerate(["#", "Fault Type", "J1 Pin", "J2 Pin"], 1):
+            c = wf.cell(1, ci, h); c.font = FNT(10, True, "FFFFFF")
+            c.fill = FILL("2E75B6"); c.alignment = AL; c.border = bd
+        rr = 2
+        for a, b in res["opens"]:
+            for ci, v in enumerate([rr - 1, "OPEN (broken)", f"J1.{a}", f"J2.{b}"], 1):
+                c = wf.cell(rr, ci, v); c.font = FNT(10); c.fill = FILL("FDEDEC")
+                c.alignment = AL; c.border = bd
+            rr += 1
+        for a, b in res["extras"]:
+            for ci, v in enumerate([rr - 1, "SHORT/WRONG", f"J1.{a}", f"J2.{b}"], 1):
+                c = wf.cell(rr, ci, v); c.font = FNT(10); c.fill = FILL("F3E5F5")
+                c.alignment = AL; c.border = bd
+            rr += 1
+        if rr == 2:
+            wf.merge_cells("A2:D2"); wf["A2"] = "No faults - PASS"
+            wf["A2"].font = FNT(11, True, "1E8449"); wf["A2"].alignment = AL
+        for col, w in zip("ABCD", [6, 16, 12, 12]):
+            wf.column_dimensions[col].width = w
+        wn = wb.create_sheet("Measured Netlist"); wn.sheet_view.showGridLines = False
+        for ci, h in enumerate(["#", "J1 Pin", "J2 Pin", "Status"], 1):
+            c = wn.cell(1, ci, h); c.font = FNT(10, True, "FFFFFF")
+            c.fill = FILL("2E75B6"); c.alignment = AL; c.border = bd
+        measured = sorted({(c.j1_pin, c.j2_pin) for c in self.current_result.connections})
+        exp = set(prof.edges)
+        for i, (a, b) in enumerate(measured, 1):
+            st = "OK" if (a, b) in exp else "EXTRA/WRONG"
+            for ci, v in enumerate([i, f"J1.{a}", f"J2.{b}", st], 1):
+                c = wn.cell(i + 1, ci, v); c.font = FNT(9); c.alignment = AL; c.border = bd
+                c.fill = FILL("EAF7EE" if st == "OK" else "F3E5F5")
+        for col, w in zip("ABCD", [6, 12, 12, 12]):
+            wn.column_dimensions[col].width = w
+        reports_dir = Path("reports"); reports_dir.mkdir(exist_ok=True)
+        ts = self.current_result.timestamp.strftime("%Y%m%d_%H%M%S")
+        snm = self.current_result.serial_number.replace("/", "_")
+        safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in prof.name)
+        out = reports_dir / f"cable_{safe}_{snm}_{ts}.xlsx"
+        try:
+            wb.save(str(out))
+        except Exception as e:
+            messagebox.showerror("Export Error", str(e)); return
+        self._log(f"[PROFILE] Report saved: {out}")
+        if messagebox.askyesno("Saved", f"Saved: {out.name}\n\nOpen now?"):
+            if sys.platform == "win32":
+                os.startfile(str(out))
+            else:
+                os.system(f"xdg-open '{out}'")
 
     def _update_stats(self):
         total = len(self.history)
@@ -1940,24 +1780,24 @@ class App(tk.Tk):
 
     # ── Jig Diagnostic Analysis & Export ─────────────────────────────────────
     def _analyze_jig_results(self):
-        """Phân tích nguyên nhân cho từng pin FAIL dựa trên sweep data.
+        """Analyze the root cause for each FAILED pin from sweep data.
 
-        Thứ tự ưu tiên:
-          1. i2c_err  → firmware báo I2C lỗi khi đọc thanh ghi
-          2. lat==1   → MCU không drive được Z-line xuống LOW
-          3. OUT0/OUT1 != expected → I2C write không được ghi nhận
-          4. sweep data → trace đứt / IC chết / pogo xấu
+        Priority order:
+          1. i2c_err  → firmware reports I2C error reading the register
+          2. lat==1   → MCU cannot drive the Z-line LOW
+          3. OUT0/OUT1 != expected → I2C write not registered
+          4. sweep data → broken trace / dead IC / bad pogo
 
-        LƯU Ý QUAN TRỌNG:
-          OUT1=0xFF (255) là GIÁ TRỊ ĐÚNG cho IO0-based group (mi=0,1,4,5)
-          vì mux_a() luôn set u19_io1=0xFF cho những group này.
-          KHÔNG được dùng OUT1==255 làm chỉ báo I2C lỗi.
+        IMPORTANT NOTE:
+          OUT1=0xFF (255) is the CORRECT value for IO0-based groups (mi=0,1,4,5)
+          because mux_a() always sets u19_io1=0xFF for these groups.
+          Do NOT use OUT1==255 as an I2C-error indicator.
         """
         EN_IO0 = {0: 0x80, 1: 0x20, 4: 0x40, 5: 0x10}  # IO0-based groups
         EN_IO1 = {2: 0x80, 3: 0x20, 6: 0x40, 7: 0x10}  # IO1-based groups
 
         def expected_regs(mi, ch):
-            """Giá trị OUT0/OUT1 mong đợi sau mux_a(mi, ch) thành công."""
+            """Expected OUT0/OUT1 values after a successful mux_a(mi, ch)."""
             ch = ch & 0x0F
             if mi in EN_IO0:
                 return (0xF0 | ch) & (~EN_IO0[mi] & 0xFF), 0xFF
@@ -1967,96 +1807,96 @@ class App(tk.Tk):
 
         for r in self._jig_results_all:
             if r.status == "OK":
-                r.root_cause     = "Bình thường"
+                r.root_cause     = "Normal"
                 r.recommendation = "—"
                 continue
 
-            # ── 1. I2C error được firmware báo tường minh ──────────────────
+            # ── 1. I2C error explicitly reported by firmware ──────────────────
             if r.i2c_err:
-                r.root_cause = "I2C error khi đọc lại thanh ghi U19"
-                r.recommendation = ("Kiểm tra PCA9555 U19: nguồn VCC, "
-                                    "địa chỉ I2C (0x20), dây SDA/SCL (RF2/RF3)")
+                r.root_cause = "I2C error reading back register U19"
+                r.recommendation = ("Check PCA9555 U19: VCC power, "
+                                    "I2C address (0x20), SDA/SCL wiring (RF2/RF3)")
 
-            # ── 2. MCU không drive được Z-line ─────────────────────────────
+            # ── 2. MCU cannot drive the Z-line ─────────────────────────────
             elif r.lat == 1:
-                r.root_cause = "MCU Z-line drive thất bại (LAT=HIGH)"
-                r.recommendation = (f"Kiểm tra MCU port pin (group mi={r.mi}): "
-                                    "dsPIC RE/RF bị ngắn mạch hoặc lỗi firmware")
+                r.root_cause = "MCU Z-line drive failed (LAT=HIGH)"
+                r.recommendation = (f"Check MCU port pin (group mi={r.mi}): "
+                                    "dsPIC RE/RF shorted or firmware error")
 
-            # ── 3. Không có dữ liệu đủ để phân tích ───────────────────────
+            # ── 3. Not enough data to analyze ───────────────────────
             elif r.mi < 0 or r.out0 < 0:
-                r.root_cause     = "Không đủ dữ liệu để phân tích"
-                r.recommendation = "Chạy lại Jig Diagnostic"
+                r.root_cause     = "Not enough data to analyze"
+                r.recommendation = "Re-run Jig Diagnostic"
 
             else:
-                # ── 4. So sánh OUT0/OUT1 thực tế với giá trị mong đợi ──────
+                # ── 4. Compare actual OUT0/OUT1 vs expected ──────
                 exp0, exp1 = expected_regs(r.mi, r.ch)
                 regs_match = (exp0 < 0) or (r.out0 == exp0 and r.out1 == exp1)
 
                 if not regs_match:
                     r.root_cause = (
-                        f"Thanh ghi MUX sai sau mux_a({r.mi},{r.ch}): "
-                        f"OUT0={r.out0} (cần {exp0}), "
-                        f"OUT1={r.out1} (cần {exp1})"
+                        f"Wrong MUX register after mux_a({r.mi},{r.ch}): "
+                        f"OUT0={r.out0} (need {exp0}), "
+                        f"OUT1={r.out1} (need {exp1})"
                     )
-                    r.recommendation = ("Kiểm tra U19 I2C: nguồn VCC, địa chỉ I2C; "
-                                        "thử tăng I2C clock delay trong firmware")
+                    r.recommendation = ("Check U19 I2C: VCC power, I2C address; "
+                                        "try increasing I2C clock delay in firmware")
 
                 else:
-                    # ── 5. Drive + MUX config đúng → hardware jig ──────────
+                    # ── 5. Drive + MUX config OK → jig hardware ──────────
                     mi_key = str(r.mi)
                     sweep  = self._sweep_data.get(mi_key, None)
 
                     if sweep is None:
-                        r.root_cause     = ("Không có continuity "
-                                            "— chưa có dữ liệu sweep")
-                        r.recommendation = "Chạy lại Jig Diagnostic"
+                        r.root_cause     = ("No continuity "
+                                            "— no sweep data yet")
+                        r.recommendation = "Re-run Jig Diagnostic"
 
                     elif len(sweep) == 0:
                         r.root_cause = (
-                            f"Toàn bộ MUX group {r.mi} không hoạt động "
-                            f"(0/16 channel có continuity)"
+                            f"Entire MUX group {r.mi} not working "
+                            f"(0/16 channels have continuity)"
                         )
                         r.recommendation = (
-                            f"Kiểm tra IC MUX group {r.mi}: "
-                            f"(1) Nguồn VCC cấp IC, "
-                            f"(2) Chân EN (active LOW từ U19), "
-                            f"(3) Z-line trên PCB"
+                            f"Check MUX IC group {r.mi}: "
+                            f"(1) IC VCC power, "
+                            f"(2) EN pin (active LOW from U19), "
+                            f"(3) Z-line on PCB"
                         )
 
                     elif r.ch not in sweep:
                         working = sorted(sweep)
                         r.root_cause = (
-                            f"PCB trace đứt: MUX group {r.mi} "
+                            f"Broken PCB trace: MUX group {r.mi} "
                             f"output Y{r.ch} → pogo pin J1.{r.pin_name}"
                         )
                         r.recommendation = (
-                            f"Vá/kiểm tra trace PCB từ MUX group {r.mi} "
-                            f"output Y{r.ch} đến pogo J1.{r.pin_name}  "
-                            f"(ch {working} trong cùng group vẫn OK)"
+                            f"Repair/check PCB trace from MUX group {r.mi} "
+                            f"output Y{r.ch} to pogo J1.{r.pin_name}  "
+                            f"(ch {working} in the same group still OK)"
                         )
 
                     else:
                         r.root_cause = (
-                            f"Pogo pin J1.{r.pin_name} tiếp xúc kém "
-                            f"(ch={r.ch} có tín hiệu trong sweep)"
+                            f"Pogo pin J1.{r.pin_name} poor contact "
+                            f"(ch={r.ch} had signal in sweep)"
                         )
                         r.recommendation = (
-                            f"Kiểm tra/thay pogo pin J1.{r.pin_name}; "
-                            f"hoặc tăng settle delay "
+                            f"Check/replace pogo pin J1.{r.pin_name}; "
+                            f"or increase settle delay "
                             f"(delay_us 200 → 500)"
                         )
 
     def _analyze_jig_j2_results(self):
-        """Phân tích nguyên nhân cho từng pin J2 FAIL (PASS 2).
+        """Analyze the root cause for each FAILED J2 pin (PASS 2).
 
-        Logic giống _analyze_jig_results() nhưng:
-          • Dữ liệu: _jig_j2_results_all + _sweep_j2_data
-          • Thanh ghi: U20 (địa chỉ 0x24, cấu trúc giống U19)
+        Same logic as _analyze_jig_results() but:
+          • Data: _jig_j2_results_all + _sweep_j2_data
+          • Registers: U20 (address 0x24, same structure as U19)
           • Z-line: PORTB (thay PORTE/PORTF)
-          • OUT1=0xFF là đúng cho IO0-based group (mi=0,1,4,5) — quy tắc giống U19
+          • OUT1=0xFF is correct for IO0-based groups (mi=0,1,4,5) — same rule as U19
 
-        LƯU Ý: expected_regs() dùng cùng công thức vì U20 có PCA9555 giống hệt U19.
+        NOTE: expected_regs() uses the same formula since U20 has an identical PCA9555 to U19.
         """
         EN_IO0 = {0: 0x80, 1: 0x20, 4: 0x40, 5: 0x10}
         EN_IO1 = {2: 0x80, 3: 0x20, 6: 0x40, 7: 0x10}
@@ -2071,120 +1911,120 @@ class App(tk.Tk):
 
         for r in self._jig_j2_results_all:
             if r.status == "OK":
-                r.root_cause     = "Bình thường"
+                r.root_cause     = "Normal"
                 r.recommendation = "—"
                 continue
 
             # ── 1. I2C error ────────────────────────────────────────────────
             if r.i2c_err:
-                r.root_cause = "I2C2 error khi đọc lại thanh ghi U20"
-                r.recommendation = ("Kiểm tra PCA9555 U20: nguồn VCC, "
-                                    "địa chỉ I2C (0x24), dây SDA2/SCL2 (RF6/RD0)")
+                r.root_cause = "I2C2 error reading back register U20"
+                r.recommendation = ("Check PCA9555 U20: VCC power, "
+                                    "I2C address (0x24), SDA2/SCL2 wiring (RF6/RD0)")
 
-            # ── 2. MCU không drive được Z-line ─────────────────────────────
+            # ── 2. MCU cannot drive the Z-line ─────────────────────────────
             elif r.lat == 1:
-                r.root_cause = "MCU Z-line drive thất bại (LAT=HIGH)"
-                r.recommendation = (f"Kiểm tra MCU PORTB pin (group mi={r.mi}): "
-                                    "dsPIC RB bị ngắn mạch hoặc lỗi firmware")
+                r.root_cause = "MCU Z-line drive failed (LAT=HIGH)"
+                r.recommendation = (f"Check MCU PORTB pin (group mi={r.mi}): "
+                                    "dsPIC RB shorted or firmware error")
 
-            # ── 3. Không đủ dữ liệu ─────────────────────────────────────────
+            # ── 3. Not enough data ─────────────────────────────────────────
             elif r.mi < 0 or r.out0 < 0:
-                r.root_cause     = "Không đủ dữ liệu để phân tích"
-                r.recommendation = "Chạy lại Jig Diagnostic"
+                r.root_cause     = "Not enough data to analyze"
+                r.recommendation = "Re-run Jig Diagnostic"
 
             else:
-                # ── 4. So sánh OUT0/OUT1 thực tế với giá trị mong đợi ──────
+                # ── 4. Compare actual OUT0/OUT1 vs expected ──────
                 exp0, exp1 = expected_regs(r.mi, r.ch)
                 regs_match = (exp0 < 0) or (r.out0 == exp0 and r.out1 == exp1)
 
                 if not regs_match:
                     r.root_cause = (
-                        f"Thanh ghi MUX sai sau mux_b({r.mi},{r.ch}): "
-                        f"OUT0={r.out0} (cần {exp0}), "
-                        f"OUT1={r.out1} (cần {exp1})"
+                        f"Wrong MUX register after mux_b({r.mi},{r.ch}): "
+                        f"OUT0={r.out0} (need {exp0}), "
+                        f"OUT1={r.out1} (need {exp1})"
                     )
-                    r.recommendation = ("Kiểm tra U20 I2C2: nguồn VCC, địa chỉ I2C (0x24); "
-                                        "thử tăng delay trong software I2C2 (RD0/RF6)")
+                    r.recommendation = ("Check U20 I2C2: VCC power, I2C address (0x24); "
+                                        "try increasing delay in software I2C2 (RD0/RF6)")
 
                 else:
-                    # ── 5. Drive + MUX config đúng → phân tích sweep ───────
+                    # ── 5. Drive + MUX config OK → analyze sweep ───────
                     mi_key = str(r.mi)
                     sweep  = self._sweep_j2_data.get(mi_key, None)
 
                     if sweep is None:
-                        r.root_cause     = ("Không có continuity "
-                                            "— chưa có dữ liệu sweep J2")
-                        r.recommendation = "Chạy lại Jig Diagnostic"
+                        r.root_cause     = ("No continuity "
+                                            "— no J2 sweep data yet")
+                        r.recommendation = "Re-run Jig Diagnostic"
 
                     elif len(sweep) == 0:
                         r.root_cause = (
-                            f"Toàn bộ J2 MUX group {r.mi} không hoạt động "
-                            f"(0/16 channel có continuity)"
+                            f"Entire J2 MUX group {r.mi} not working "
+                            f"(0/16 channels have continuity)"
                         )
                         r.recommendation = (
-                            f"Kiểm tra IC MUX B-side group {r.mi}: "
-                            f"(1) Nguồn VCC, "
-                            f"(2) Chân EN (active LOW từ U20), "
-                            f"(3) Z-line PORTB trên PCB"
+                            f"Check B-side MUX IC group {r.mi}: "
+                            f"(1) VCC power, "
+                            f"(2) EN pin (active LOW from U20), "
+                            f"(3) PORTB Z-line on PCB"
                         )
 
                     elif r.ch not in sweep:
                         working = sorted(sweep)
                         r.root_cause = (
-                            f"PCB trace đứt: J2 MUX group {r.mi} "
+                            f"Broken PCB trace: J2 MUX group {r.mi} "
                             f"output Y{r.ch} → pogo pin J2.{r.pin_name}"
                         )
                         r.recommendation = (
-                            f"Vá/kiểm tra trace PCB từ J2 MUX group {r.mi} "
-                            f"output Y{r.ch} đến pogo J2.{r.pin_name}  "
-                            f"(ch {working} trong cùng group vẫn OK)"
+                            f"Repair/check PCB trace from J2 MUX group {r.mi} "
+                            f"output Y{r.ch} to pogo J2.{r.pin_name}  "
+                            f"(ch {working} in the same group still OK)"
                         )
 
                     else:
                         r.root_cause = (
-                            f"Pogo pin J2.{r.pin_name} tiếp xúc kém "
-                            f"(ch={r.ch} có tín hiệu trong sweep)"
+                            f"Pogo pin J2.{r.pin_name} poor contact "
+                            f"(ch={r.ch} had signal in sweep)"
                         )
                         r.recommendation = (
-                            f"Kiểm tra/thay pogo pin J2.{r.pin_name}; "
-                            f"hoặc tăng settle delay "
+                            f"Check/replace pogo pin J2.{r.pin_name}; "
+                            f"or increase settle delay "
                             f"(delay_us 200 → 500)"
                         )
 
     def _export_jig_report(self):
-        """Xuất kết quả Jig Self-Diagnostic ra file Excel (J1 + J2)."""
+        """Export the Jig Self-Diagnostic result to an Excel file (J1 + J2)."""
         if not EXCEL_OK:
             messagebox.showerror("Missing Library",
-                                 "openpyxl chưa cài.\npip install openpyxl")
+                                 "openpyxl is not installed.\npip install openpyxl")
             return
         if not self._jig_results_all and not self._jig_j2_results_all:
-            messagebox.showinfo("No Data", "Chạy Jig Self-Diagnostic trước.")
+            messagebox.showinfo("No Data", "Run Jig Self-Diagnostic first.")
             return
 
         wb = openpyxl.Workbook()
 
-        # Sheet 1 — J1: tất cả 116 pin
+        # Sheet 1 — J1: all 116 pins
         ws1 = wb.active
         ws1.title = "J1 All Pins"
         if self._jig_results_all:
             self._build_jig_sheet_all(ws1, self._jig_results_all, side_label="J1")
         else:
-            ws1["A1"] = "Không có dữ liệu J1"
+            ws1["A1"] = "No J1 data"
 
-        # Sheet 2 — J1: chỉ pin FAIL (nếu có)
+        # Sheet 2 — J1: failed pins only (if any)
         j1_failed = [r for r in self._jig_results_all if r.status == "FAIL"]
         if j1_failed:
             ws2 = wb.create_sheet("J1 Root Cause")
             self._build_jig_sheet_fail(ws2, j1_failed, side_label="J1")
 
-        # Sheet 3 — J2: tất cả 116 pin
+        # Sheet 3 — J2: all 116 pins
         ws3 = wb.create_sheet("J2 All Pins")
         if self._jig_j2_results_all:
             self._build_jig_sheet_all(ws3, self._jig_j2_results_all, side_label="J2")
         else:
-            ws3["A1"] = "Không có dữ liệu J2"
+            ws3["A1"] = "No J2 data"
 
-        # Sheet 4 — J2: chỉ pin FAIL (nếu có)
+        # Sheet 4 — J2: failed pins only (if any)
         j2_failed = [r for r in self._jig_j2_results_all if r.status == "FAIL"]
         if j2_failed:
             ws4 = wb.create_sheet("J2 Root Cause")
@@ -2203,7 +2043,7 @@ class App(tk.Tk):
             return
 
         self._log(f"[JIG] 📋  Report saved: reports/{fname}")
-        if messagebox.askyesno("Đã lưu", f"Lưu thành công:\n{fname}\n\nMở ngay?"):
+        if messagebox.askyesno("Saved", f"Saved:\n{fname}\n\nOpen now?"):
             if sys.platform == "win32":
                 os.startfile(str(out))
             else:
@@ -2218,7 +2058,7 @@ class App(tk.Tk):
         return PatternFill("solid", fgColor=c)
 
     def _build_jig_sheet_all(self, ws, results, side_label="J1"):
-        """Sheet 'All Pins' — toàn bộ 116 pin với status + drive state + analysis."""
+        """Sheet 'All Pins' — all 116 pins with status + drive state + analysis."""
         thin = self._jig_thin
         fill = self._jig_fill
         ts   = (self._jig_diag_ts or datetime.now()).strftime("%Y-%m-%d  %H:%M:%S")
@@ -2306,7 +2146,7 @@ class App(tk.Tk):
         ws.freeze_panes = "A6"
 
     def _build_jig_sheet_fail(self, ws, failed, side_label="J1"):
-        """Sheet 'Root Cause Analysis' — chỉ pin FAIL, trình bày dạng card."""
+        """Sheet 'Root Cause Analysis' — failed pins only, card layout."""
         thin = self._jig_thin
         fill = self._jig_fill
 
@@ -2343,8 +2183,8 @@ class App(tk.Tk):
 
             for label, value, lbl_fill, val_fill, h in [
                 ("Drive State",  drive_str,         "FAD7A0", "FEF9E7", 18),
-                ("Nguyên nhân",  r.root_cause,       "F5CBA7", "FEF9E7", 36),
-                ("Khắc phục",    r.recommendation,   "A9DFBF", "EAFAF1", 36),
+                ("Root Cause",  r.root_cause,       "F5CBA7", "FEF9E7", 36),
+                ("Fix",    r.recommendation,   "A9DFBF", "EAFAF1", 36),
             ]:
                 ws[f"A{row}"].border = thin()
                 ws[f"B{row}"].value = label
@@ -2370,38 +2210,7 @@ class App(tk.Tk):
         if not self.current_result:
             messagebox.showinfo("No Data", "No test result to export.")
             return
-
-        reports_dir = Path("reports")
-        reports_dir.mkdir(exist_ok=True)
-
-        ts    = self.current_result.timestamp.strftime("%Y%m%d_%H%M%S")
-        sn    = self.current_result.serial_number.replace("/","_")
-        fname = f"cable_test_{sn}_{ts}.xlsx"
-        out   = reports_dir / fname
-
-        template = Path(TEMPLATE_FILE)
-        if not template.exists():
-            # Auto-create template
-            try:
-                from create_template import create_template
-                create_template(str(template))
-            except Exception as e:
-                messagebox.showerror("Template Error",
-                    f"Cannot create template: {e}\n"
-                    "Place cable_test_report_template.xlsx in app folder.")
-                return
-
-        try:
-            gen = ReportGenerator()
-            gen.generate(self.current_result, str(template), str(out))
-            messagebox.showinfo("Report Saved",
-                f"Report saved:\n{out}\n\nOpen now?",
-            )
-            if messagebox.askyesno("Open?", f"Open {fname}?"):
-                os.startfile(str(out)) if sys.platform=="win32" else \
-                os.system(f"xdg-open '{out}'")
-        except Exception as e:
-            messagebox.showerror("Export Error", str(e))
+        self._export_profile_report()
 
     def _open_reports_folder(self):
         d = Path("reports")
