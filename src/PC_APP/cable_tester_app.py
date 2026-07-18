@@ -100,6 +100,511 @@ class JigPinResult:
     recommendation: str = ""   # corrective action
 
 # ── Excel Report Generator ────────────────────────────────────────────────
+class ReportGenerator:
+
+    def thin(self, color="8EA9C1"):
+        s = Side(style='thin', color=color)
+        return Border(left=s, right=s, top=s, bottom=s)
+
+    def fill(self, color):
+        return PatternFill("solid", fgColor=color)
+
+    def _complete_borders(self, ws, r1, c1, r2, c2, color="8EA9C1"):
+        """Give every cell in the rectangle a full ("All Borders") box, filling
+        only the sides that are missing so existing colored borders are kept.
+        openpyxl closes a merged box's outer perimeter on save, but interior
+        merged cells and gap cells can still be border-less -- this makes the
+        grid explicit on every cell, which is what Excel needs."""
+        from openpyxl.styles import Border, Side
+        d = Side(style="thin", color=color)
+        for r in range(r1, r2 + 1):
+            for c in range(c1, c2 + 1):
+                cell = ws.cell(r, c)
+                b = cell.border
+                keep = lambda s: getattr(b, s) if (getattr(b, s) and getattr(b, s).style) else d
+                cell.border = Border(top=keep("top"), bottom=keep("bottom"),
+                                     left=keep("left"), right=keep("right"))
+
+    def generate(self, result: TestResult, template_path: str, out_path: str,
+                 expected_map: dict, gnd_j1: set, gnd_j2: set) -> str:
+        if not EXCEL_OK:
+            raise RuntimeError("openpyxl not installed")
+
+        if os.path.exists(template_path):
+            wb = openpyxl.load_workbook(template_path)
+        else:
+            from create_template import create_template
+            create_template(template_path)
+            wb = openpyxl.load_workbook(template_path)
+
+        ws = wb["Test Report"]
+        n_conn = len(result.connections)
+
+        # ── Detect cable orientation (normal A->B, or reversed B->A) ───────
+        # A cable plugged in reversed swaps the J1/J2 roles, so its measured
+        # edge set is the reverse of the expected one. Score both and, if the
+        # reversed reading matches the profile better, flip the expected map /
+        # GND sets so the report validates the cable correctly either way.
+        _meas_edges = {(c.j1_pin, c.j2_pin) for c in result.connections}
+        _fwd_edges  = set(expected_map.items()) | {(a, b) for a in gnd_j1 for b in gnd_j2}
+        _rev_meas   = {(b, a) for (a, b) in _meas_edges}
+        _fwd_bad = len(_fwd_edges - _meas_edges) + len(_meas_edges - _fwd_edges)
+        _rev_bad = len(_fwd_edges - _rev_meas)  + len(_rev_meas - _fwd_edges)
+        orientation = "A \u2192 B (normal)"
+        if _rev_bad < _fwd_bad:
+            orientation = "B \u2192 A (reversed)"
+            expected_map = {v: k for k, v in expected_map.items()}
+            gnd_j1, gnd_j2 = gnd_j2, gnd_j1
+
+        # ── Info cells ───────────────────────────────────────────────────
+        info_map = {
+            "C5":  "—",
+            "C6":  "Cable Continuity Scanner",
+            "C7":  result.serial_number,
+            "C8":  "—",
+            "C9":  result.timestamp.strftime("%Y-%m-%d"),
+            "C10": result.timestamp.strftime("%H:%M:%S"),
+            "C11": result.operator or "—",
+            "C12": result.fw_version or "—",
+            "H5":  str(result.total_pins),
+            "H6":  str(n_conn),
+            "H7":  "0",
+            "H8":  "0",
+            "H9":  "—",
+            "H10": "—",
+            "H11": f"{result.duration_s:.1f}",
+            "H12": result.com_port,
+        }
+        for ref, val in info_map.items():
+            ws[ref] = val
+            ws[ref].font = Font(name='Arial', size=10)
+
+        # ── Separate signal vs GND connections ───────────────────────────
+        # Dedup signal: for each signal J1 pin, take first non-GND J2 hit.
+        # Also detect SHORT: signal J1 pin that also has gnd_j2 hits = shorted to GND.
+        from collections import defaultdict as _dd
+        _j1_gnd  = _dd(list)   # signal J1 pin -> list of its gnd_j2 hits
+        _j1_sig  = _dd(list)   # signal J1 pin -> list of its signal J2 hits
+        gnd_conns: list = []
+
+        for c in result.connections:
+            if c.j1_pin in gnd_j1 or c.j2_pin in gnd_j2:
+                gnd_conns.append(c)
+                if c.j1_pin not in gnd_j1:          # signal J1 pulling GND bus
+                    _j1_gnd[c.j1_pin].append(c.j2_pin)
+            else:
+                _j1_sig[c.j1_pin].append(c.j2_pin)  # real signal hit
+
+        # Build deduped signal_conns (first hit per J1 pin)
+        _seen_j1: set = set()
+        signal_conns: list = []
+        for c in result.connections:
+            if c.j1_pin in gnd_j1 or c.j2_pin in gnd_j2:
+                continue
+            if c.j1_pin not in _seen_j1:
+                _seen_j1.add(c.j1_pin)
+                signal_conns.append(c)
+
+        n_signal = len(signal_conns)
+        n_gnd    = len(gnd_conns)
+
+        # SHORT faults: signal J1 pins that also pulled GND bus
+        short_faults = sorted(
+            [j1 for j1 in _j1_gnd if _j1_gnd[j1]],
+            key=lambda x: (x[0], int(x[1:]))
+        )
+
+        # Validate signal pairs for PASS/FAIL verdict
+        detected = {c.j1_pin: c.j2_pin for c in signal_conns}
+        missing_sig  = [j1 for j1, ej2 in expected_map.items()
+                        if detected.get(j1) is None]
+        miswire_sig  = [f"J1.{j1}→got J2.{detected[j1]} exp J2.{ej2}"
+                        for j1, ej2 in expected_map.items()
+                        if detected.get(j1) is not None and detected[j1] != ej2]
+        verdict     = "PASS" if not missing_sig and not miswire_sig and not short_faults else "FAIL"
+        verdict_clr = "1E8449" if verdict == "PASS" else "922B21"
+
+        # Update info cells with verdict
+        info_map["H7"]  = str(len(missing_sig))
+        info_map["H8"]  = str(len(miswire_sig) + len(short_faults))
+        info_map["H9"]  = verdict
+        for ref in ("H7","H8","H9"):
+            ws[ref] = info_map[ref]
+            ws[ref].font = Font(name='Arial', size=10)
+        ws["H9"].fill = self.fill(verdict_clr)
+        ws["H9"].font = Font(name='Arial', size=10, bold=True, color="FFFFFF")
+
+        # ── Result badge (matches screenshot) ────────────────────────────
+        result_cell = ws["B13"]
+        issues = len(missing_sig) + len(miswire_sig) + len(short_faults)
+        if verdict == "PASS":
+            result_cell.value = (
+                f"✓  PASS — {n_signal} signal pair(s) verified"
+                f"  |  GND bus: {n_gnd} connection(s)"
+                f"  |  Orientation: {orientation}"
+            )
+        else:
+            result_cell.value = (
+                f"✗  FAIL — {issues} issue(s)"
+                f"  |  {n_signal} signal detected"
+                f"  |  GND bus: {n_gnd} conn"
+                f"  |  Orientation: {orientation}"
+            )
+        result_cell.fill = self.fill(verdict_clr)
+        result_cell.font = Font(name='Arial', size=15, bold=True, color="FFFFFF")
+
+        # ── Connection rows ───────────────────────────────────────────────
+        # Layout per image:
+        #   Row 16 (header): # | J1 Pin | Pass Direction | J2 Pin
+        #   Row 17+: GND block (merged, lists all J1 GND + J2 GND pins)
+        #            then signal rows
+        START_ROW = 17
+        data_rows = max(n_signal + 20, 40)
+
+        for rng in list(ws.merged_cells.ranges):
+            if rng.min_row >= START_ROW - 1:
+                ws.unmerge_cells(str(rng))
+        for r in range(START_ROW - 1, START_ROW + data_rows):
+            for col in ["B","C","D","E","F","G","H","I","J","K"]:
+                ws[f"{col}{r}"].value = None
+
+        # ── Column header row ─────────────────────────────────────────────
+        HDR_ROW = START_ROW - 1
+        ws.row_dimensions[HDR_ROW].height = 22
+        ws.merge_cells(f"D{HDR_ROW}:J{HDR_ROW}")
+        for ref, val, align in [
+            (f"B{HDR_ROW}", "#",              "center"),
+            (f"C{HDR_ROW}", "J1 Pin",         "center"),
+            (f"D{HDR_ROW}", "Pass Direction", "center"),
+            (f"K{HDR_ROW}", "J2 Pin",         "center"),
+        ]:
+            c = ws[ref]
+            c.value = val
+            c.font  = Font(name='Arial', size=10, bold=True, color="FFFFFF")
+            c.fill  = self.fill("2E4F6F")
+            c.alignment = Alignment(horizontal=align, vertical='center')
+            c.border = self.thin("1A3A5C")
+
+        if not n_conn:
+            ws.row_dimensions[START_ROW].height = 24
+            ws.merge_cells(f"B{START_ROW}:K{START_ROW}")
+            c = ws[f"B{START_ROW}"]
+            c.value = "No connections detected"
+            c.font  = Font(name='Arial', size=11, bold=True, color="843C0C")
+            c.fill  = self.fill("FCE4D6")
+            c.alignment = Alignment(horizontal='center', vertical='center')
+            c.border = self.thin()
+        else:
+            row_idx = 0
+
+            # ── GND block: one merged cell group ─────────────────────────
+            # Collect all unique GND J1 and J2 pins from detected connections
+            gnd_j1_sorted = sorted(
+                {c.j1_pin for c in gnd_conns if c.j1_pin in gnd_j1},
+                key=lambda x: (x[0], int(x[1:]))
+            )
+            gnd_j2_sorted = sorted(
+                {c.j2_pin for c in gnd_conns if c.j2_pin in gnd_j2},
+                key=lambda x: (x[0], int(x[1:]))
+            )
+
+            # Build display strings — each connector row (A,B,C...) on its own line
+            def fmt_pin_list(pins, prefix):
+                from itertools import groupby
+                lines_out = []
+                for row_letter, group in groupby(pins, key=lambda x: x[0]):
+                    row_pins = list(group)
+                    lines_out.append(", ".join(f"{prefix}.{p}" for p in row_pins))
+                return "\n".join(lines_out)
+
+            j1_text = fmt_pin_list(gnd_j1_sorted, "J1")
+            j2_text = fmt_pin_list(gnd_j2_sorted, "J2")
+            combined_text = j1_text + ("\n" if j1_text and j2_text else "") + j2_text
+
+            # Calculate number of rows needed (one per text line, min 2)
+            n_lines = combined_text.count("\n") + 1
+            gnd_rows = max(n_lines + 1, 3)   # +1 for "GROUP" label line
+
+            GND_START = START_ROW + row_idx
+            GND_END   = GND_START + gnd_rows - 1
+
+            # Row number cell (spans all GND rows)
+            ws.merge_cells(f"B{GND_START}:B{GND_END}")
+            c = ws[f"B{GND_START}"]
+            c.value     = 1
+            c.font      = Font(name='Arial', size=10, bold=True, color="7D6608")
+            c.fill      = self.fill("FFFDE7")
+            c.alignment = Alignment(horizontal='center', vertical='center')
+            c.border    = self.thin("C9A227")
+
+            # J1 pin cell (spans all GND rows, left column)
+            ws.merge_cells(f"C{GND_START}:C{GND_END}")
+            c = ws[f"C{GND_START}"]
+            c.value     = ""   # blank — pins listed inside D:J merged block
+            c.fill      = self.fill("FFFDE7")
+            c.border    = self.thin("C9A227")
+
+            # Middle merged block D:J spanning all GND rows
+            ws.merge_cells(f"D{GND_START}:J{GND_END}")
+            c = ws[f"D{GND_START}"]
+            c.value     = "GROUP\n" + combined_text
+            c.font      = Font(name='Arial', size=10, color="7D6608")
+            c.fill      = self.fill("FFFDE7")
+            c.alignment = Alignment(horizontal='center', vertical='center',
+                                    wrap_text=True)
+            c.border    = self.thin("C9A227")
+
+            # J2 pin cell (spans all GND rows, right column)
+            ws.merge_cells(f"K{GND_START}:K{GND_END}")
+            c = ws[f"K{GND_START}"]
+            c.value     = ""   # blank — pins listed inside D:J merged block
+            c.fill      = self.fill("FFFDE7")
+            c.border    = self.thin("C9A227")
+
+            # Set row heights for GND block
+            row_height = max(15 * gnd_rows, 80)
+            for r in range(GND_START, GND_END + 1):
+                ws.row_dimensions[r].height = row_height / gnd_rows
+
+            row_idx += gnd_rows
+
+            # ── Signal rows ───────────────────────────────────────────────
+            for conn in signal_conns:
+                r  = START_ROW + row_idx
+                bg = "F2F7FF" if row_idx % 2 == 0 else "FFFFFF"
+                exp_j2 = expected_map.get(conn.j1_pin)
+                if exp_j2 is None:
+                    row_clr = "FDEDEC"
+                    j2_val  = f"J2.{conn.j2_pin}  ⚠"
+                elif conn.j2_pin == exp_j2:
+                    row_clr = bg
+                    j2_val  = f"J2.{conn.j2_pin}  ✓"
+                else:
+                    row_clr = "F3E5F5"
+                    j2_val  = f"J2.{conn.j2_pin}  ✗ (exp J2.{exp_j2})"
+
+                ws.row_dimensions[r].height = 18
+                ws.merge_cells(f"D{r}:J{r}")
+                for ref, val, align in [
+                    (f"B{r}", row_idx + 1,          "center"),
+                    (f"C{r}", f"J1.{conn.j1_pin}",  "center"),
+                    (f"D{r}", "↔",                   "center"),
+                    (f"K{r}", j2_val,                "left"),
+                ]:
+                    c = ws[ref]
+                    c.value = val
+                    c.font  = Font(name='Arial', size=10)
+                    c.fill  = self.fill(row_clr)
+                    c.alignment = Alignment(horizontal=align, vertical='center')
+                    c.border = self.thin()
+                row_idx += 1
+
+            # ── Missing signal rows ───────────────────────────────────────
+            for j1 in missing_sig:
+                r = START_ROW + row_idx
+                ws.row_dimensions[r].height = 18
+                ws.merge_cells(f"D{r}:J{r}")
+                for ref, val, align in [
+                    (f"B{r}", row_idx + 1,                                    "center"),
+                    (f"C{r}", f"J1.{j1}",                                     "center"),
+                    (f"D{r}", "↔",                                             "center"),
+                    (f"K{r}", f"MISSING  (exp J2.{expected_map[j1]})",   "left"),
+                ]:
+                    c = ws[ref]
+                    c.value = val
+                    c.font  = Font(name='Arial', size=10, bold=(ref.startswith("K")))
+                    c.fill  = self.fill("FDEDEC")
+                    c.alignment = Alignment(horizontal=align, vertical='center')
+                    c.border = self.thin("E57373")
+                row_idx += 1
+
+            # ── SHORT fault rows ──────────────────────────────────────────
+            for j1 in short_faults:
+                r = START_ROW + row_idx
+                ws.row_dimensions[r].height = 18
+                ws.merge_cells(f"D{r}:J{r}")
+                for ref, val, align in [
+                    (f"B{r}", row_idx + 1,                                         "center"),
+                    (f"C{r}", f"J1.{j1}",                                          "center"),
+                    (f"D{r}", "⚡ SHORT",                                           "center"),
+                    (f"K{r}", f"SHORT to GND bus  (J1.{j1} bridged to GND)",       "left"),
+                ]:
+                    c = ws[ref]
+                    c.value = val
+                    c.font  = Font(name='Arial', size=10,
+                                   bold=True, color=("FFFFFF" if ref.startswith("D") else "C0392B"))
+                    c.fill  = self.fill("C0392B" if ref.startswith("D") else "FDEDEC")
+                    c.alignment = Alignment(horizontal=align, vertical='center')
+                    c.border = self.thin("C0392B")
+                row_idx += 1
+
+        end_r = START_ROW + max(row_idx if n_conn else 1, 1) + 2
+        ws.merge_cells(f"B{end_r}:K{end_r}")
+        ws[f"B{end_r}"].value = (
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            "  |  Cable Jig Tester PC Software"
+        )
+        ws[f"B{end_r}"].font      = Font(name='Arial', size=9, color="888888", italic=True)
+        ws[f"B{end_r}"].alignment = Alignment(horizontal='center', vertical='center')
+
+        # ── Test History sheet ────────────────────────────────────────────
+        try:
+            ws2 = wb["Test History"]
+            next_row = 3
+            for row in ws2.iter_rows(min_row=3):
+                if row[0].value is not None:
+                    next_row = row[0].row + 1
+                else:
+                    break
+            ws2.row_dimensions[next_row].height = 20
+            bg = "F2F7FF" if next_row % 2 == 0 else "FFFFFF"
+            hist_data = [
+                next_row - 2,
+                result.timestamp.strftime("%Y-%m-%d"),
+                result.timestamp.strftime("%H:%M:%S"),
+                result.serial_number,
+                "—",
+                "—",
+                result.total_pins,
+                n_conn,
+                "—", "—", "—",
+                "DONE",
+            ]
+            for ci, val in enumerate(hist_data, 1):
+                c = ws2.cell(next_row, ci, val)
+                c.font  = Font(name='Arial', size=10)
+                c.fill  = PatternFill("solid", fgColor=bg)
+                c.alignment = Alignment(horizontal='center', vertical='center')
+                c.border = self.thin()
+        except Exception:
+            pass
+
+        # ── Connection Map sheet ──────────────────────────────────────────
+        try:
+            if "Connection Map" in wb.sheetnames:
+                del wb["Connection Map"]
+            wm = wb.create_sheet("Connection Map")
+            wm.sheet_view.showGridLines = False
+
+            wm.merge_cells("A1:E1")
+            wm["A1"].value = (
+                f"Connection Map — S/N: {result.serial_number}"
+                f"  |  {n_signal} signal pair(s)  +  {len(gnd_j1_sorted)} GND pin(s)"
+            )
+            wm["A1"].font  = Font(name='Arial', size=13, bold=True, color="FFFFFF")
+            wm["A1"].fill  = self.fill(verdict_clr)
+            wm["A1"].alignment = Alignment(horizontal='center', vertical='center')
+            wm.row_dimensions[1].height = 28
+
+            for col, hdr, w in zip("ABCDE",
+                                   ["#", "J1 Pin", "Pass Direction", "J2 Pin", "Status"],
+                                   [5, 14, 40, 14, 14]):
+                c = wm[f"{col}2"]
+                c.value = hdr
+                c.font  = Font(name='Arial', size=10, bold=True, color="FFFFFF")
+                c.fill  = self.fill("2E4F6F")
+                c.alignment = Alignment(horizontal='center', vertical='center')
+                c.border = self.thin()
+                wm.column_dimensions[col].width = w
+            wm.row_dimensions[2].height = 22
+
+            cm_row = 3
+            # GND block — one merged cell group in column C (Pass Direction)
+            n_gnd_lines = combined_text.count("\n") + 1
+            gnd_blk = max(n_gnd_lines + 1, 3)
+            GND_END_CM = cm_row + gnd_blk - 1
+
+            wm.merge_cells(f"A{cm_row}:A{GND_END_CM}")
+            c = wm[f"A{cm_row}"]
+            c.value = 1; c.font = Font(name='Arial',size=10,bold=True,color="7D6608")
+            c.fill = self.fill("FFFDE7")
+            c.alignment = Alignment(horizontal='center',vertical='center')
+            c.border = self.thin("C9A227")
+
+            wm.merge_cells(f"B{cm_row}:B{GND_END_CM}")
+            c = wm[f"B{cm_row}"]
+            c.value = ""; c.fill = self.fill("FFFDE7"); c.border = self.thin("C9A227")
+
+            wm.merge_cells(f"C{cm_row}:C{GND_END_CM}")
+            c = wm[f"C{cm_row}"]
+            c.value = "GROUP\n" + combined_text
+            c.font  = Font(name='Arial', size=10, color="7D6608")
+            c.fill  = self.fill("FFFDE7")
+            c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            c.border = self.thin("C9A227")
+
+            wm.merge_cells(f"D{cm_row}:D{GND_END_CM}")
+            c = wm[f"D{cm_row}"]
+            c.value = ""; c.fill = self.fill("FFFDE7"); c.border = self.thin("C9A227")
+
+            wm.merge_cells(f"E{cm_row}:E{GND_END_CM}")
+            c = wm[f"E{cm_row}"]
+            c.value = "GND"; c.font = Font(name='Arial',size=10,bold=True,color="7D6608")
+            c.fill = self.fill("FFFDE7")
+            c.alignment = Alignment(horizontal='center',vertical='center')
+            c.border = self.thin("C9A227")
+
+            rh = max(15 * gnd_blk, 80) / gnd_blk
+            for r in range(cm_row, GND_END_CM + 1):
+                wm.row_dimensions[r].height = rh
+            cm_row = GND_END_CM + 1
+
+            # Signal rows
+            for idx, conn in enumerate(signal_conns, 2):
+                bg = "F2F7FF" if idx % 2 == 0 else "FFFFFF"
+                exp_j2 = expected_map.get(conn.j1_pin)
+                if exp_j2 is None:
+                    status, bg = "⚠ Unexpected", "FDEDEC"
+                elif conn.j2_pin == exp_j2:
+                    status = "✓ OK"
+                else:
+                    status, bg = f"✗ exp J2.{exp_j2}", "F3E5F5"
+                wm.row_dimensions[cm_row].height = 18
+                for col, val, align in zip("ABCDE",
+                    [idx, f"J1.{conn.j1_pin}", "↔", f"J2.{conn.j2_pin}", status],
+                    ["center","center","center","center","left"]):
+                    c = wm[f"{col}{cm_row}"]
+                    c.value = val
+                    c.font  = Font(name='Arial', size=10)
+                    c.fill  = self.fill(bg)
+                    c.alignment = Alignment(horizontal=align, vertical='center')
+                    c.border = self.thin()
+                cm_row += 1
+
+            # Missing rows
+            for j1 in missing_sig:
+                wm.row_dimensions[cm_row].height = 18
+                for col, val, align in zip("ABCDE",
+                    [cm_row-2, f"J1.{j1}", "↔",
+                     f"J2.{expected_map[j1]}", "✗ MISSING"],
+                    ["center","center","center","center","left"]):
+                    c = wm[f"{col}{cm_row}"]
+                    c.value = val
+                    c.font  = Font(name='Arial', size=10,
+                                   bold=(col=="E"), color=("C0392B" if col=="E" else "000000"))
+                    c.fill  = self.fill("FDEDEC")
+                    c.alignment = Alignment(horizontal=align, vertical='center')
+                    c.border = self.thin("E57373")
+                cm_row += 1
+
+        except Exception:
+            pass
+
+        # ── Enforce a complete "All Borders" grid on every table cell ──────
+        last_data = end_r - 1
+        while last_data > HDR_ROW and all(
+                ws.cell(last_data, c).value in (None, "") for c in range(2, 12)):
+            last_data -= 1
+        self._complete_borders(ws, 5, 2, 12, 5)                 # info: left block
+        self._complete_borders(ws, 5, 7, 12, 11)                # info: right block
+        self._complete_borders(ws, HDR_ROW, 2, last_data, 11)   # fault-detail table
+        if "Connection Map" in wb.sheetnames:
+            wm = wb["Connection Map"]
+            self._complete_borders(wm, 2, 1, wm.max_row, 5)
+        wb.save(out_path)
+        return out_path
+
+
 # -- Cable profile (netlist) model -----------------------------------------
 @dataclass
 class CableProfile:
@@ -161,13 +666,26 @@ class CableProfile:
         return self._cache()[2]
 
     def compare(self, measured_edges):
-        exp = set(self.edges); meas = set(measured_edges)
-        opens  = sorted(exp - meas)
-        extras = sorted(meas - exp)
+        """Compare measured vs expected, orientation-independent.
+
+        The same cable plugged in reversed (its two ends swapped between the
+        connectors) yields the reversed edge set {(b, a)}. We score both the
+        forward and reversed measurement and keep whichever matches better, so
+        a correctly-made cable passes regardless of which end goes to J1/J2."""
+        exp  = set(self.edges)
+        meas = set(measured_edges)
+        rev  = {(b, a) for (a, b) in meas}          # cable plugged in reversed
+        f_opens, f_extras = exp - meas, meas - exp
+        r_opens, r_extras = exp - rev,  rev - exp
+        if (len(r_opens) + len(r_extras)) < (len(f_opens) + len(f_extras)):
+            orientation, opens, extras, used = "reversed", r_opens, r_extras, rev
+        else:
+            orientation, opens, extras, used = "forward", f_opens, f_extras, meas
         return {"verdict": "PASS" if not opens and not extras else "FAIL",
-                "opens": opens, "extras": extras,
-                "n_expected": len(exp), "n_measured": len(meas),
-                "n_ok": len(exp & meas)}
+                "opens": sorted(opens), "extras": sorted(extras),
+                "orientation": orientation,
+                "n_expected": len(exp), "n_measured": len(used),
+                "n_ok": len(exp & used)}
 
 
 def _profile_path(name):
@@ -198,6 +716,7 @@ def load_profile(path):
 
 
 DEFAULT_PROFILE_NAME = "Default cable (66 signal + GND bus)"
+RAW_PROFILE_NAME     = "\u2014 Raw capture (no reference) \u2014"
 
 def _build_default_profile():
     """The original 116-pin cable, defined once as the seed of a profile."""
@@ -357,6 +876,7 @@ class App(tk.Tk):
         self._jig_diag_ts:       Optional[datetime]  = None
         self._jig_diag_com:      str                 = ""
         self._jig_diag_fw:       str                 = ""
+        self._last_fw_version:   str                 = ""  # last VERSION from tester
         # Jig self-diagnostic state — PASS 2 (J2 side)
         self._jig_j2_fail_pins:     List[str]           = []
         self._jig_j2_results_all:   List[JigPinResult]  = []
@@ -819,6 +1339,7 @@ class App(tk.Tk):
             return
 
         sn = self.var_sn.get().strip() or "SN-000000"
+        self.serial_reader.send("V")          # refresh firmware version for the report
         self.serial_reader.send(f"S,{sn}")
         time.sleep(0.1)
         self.serial_reader.send("T")
@@ -830,6 +1351,7 @@ class App(tk.Tk):
             serial_number = sn,
             operator      = self.var_operator.get(),
             com_port      = self.var_port.get(),
+            fw_version    = self._last_fw_version,
         )
 
         # Reset UI
@@ -1060,6 +1582,7 @@ class App(tk.Tk):
             self._status("Tester responded (PONG)")
 
         elif tag == "VERSION" and len(parts) >= 2:
+            self._last_fw_version = parts[1]
             if self.current_result:
                 self.current_result.fw_version = parts[1]
             self._status(f"Firmware: v{parts[1]}")
@@ -1519,6 +2042,11 @@ class App(tk.Tk):
 
     def _add_conn_row(self, conn: ConnectionRecord):
         j1, j2 = conn.j1_pin, conn.j2_pin
+        if self.active_profile is None:          # RAW capture - show plainly
+            idx = len(self.tree.get_children()) + 1
+            self.tree.insert("", "end", values=(idx, f"J1.{j1}", f"J2.{j2}"),
+                             tags=("odd" if idx % 2 else "even",))
+            return
         prof = self.active_profile or DEFAULT_PROFILE
         _g1, _g2, _exp = prof.gnd_j1(), prof.gnd_j2(), prof.signal_map()
 
@@ -1554,6 +2082,120 @@ class App(tk.Tk):
                           values=(idx, f"J1.{j1}", j2_disp),
                           tags=(tag_name,))
 
+    def _render_raw_groups(self):
+        """RAW display grouped by electrical net (connected component).
+        A 2-pin net is shown as a signal pair; a multi-pin net is shown as a
+        GROUP header followed by rows listing its member pins (J1 / J2 side).
+        Returns (n_signal_pairs, n_groups)."""
+        conns = self.current_result.connections if self.current_result else []
+        parent = {}
+        def find(x):
+            parent.setdefault(x, x)
+            root = x
+            while parent[root] != root:
+                root = parent[root]
+            while parent[x] != root:
+                parent[x], x = root, parent[x]
+            return root
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+        for c in conns:
+            union(f"J1.{c.j1_pin}", f"J2.{c.j2_pin}")
+        nets = {}
+        for node in list(parent):
+            nets.setdefault(find(node), set()).add(node)
+
+        def pinkey(p):
+            s = p.split(".", 1)[1]
+            num = "".join(ch for ch in s if ch.isdigit())
+            return (s[0], int(num) if num else 0)
+
+        for it in self.tree.get_children():
+            self.tree.delete(it)
+        self._gnd_tree_id = None; self._gnd_count = 0
+
+        def _row(p):                           # connector row letter, e.g. "A" of "J1.A10"
+            return p.split(".", 1)[1][0]
+
+        # Split nets into signal pairs (1<->1) and multi-pin groups, each
+        # sorted numerically by pin (A2, A4, ... not A10, A12, A2).
+        pairs = []; groups = []
+        for net in nets.values():
+            j1 = sorted([n for n in net if n.startswith("J1.")], key=pinkey)
+            j2 = sorted([n for n in net if n.startswith("J2.")], key=pinkey)
+            if len(j1) == 1 and len(j2) == 1:
+                pairs.append((j1, j2))
+            else:
+                groups.append((net, j1, j2))
+        pairs.sort(key=lambda pr: pinkey(pr[0][0]))
+        groups.sort(key=lambda g: (-len(g[0]),
+                                   pinkey(g[1][0]) if g[1] else ("", 0)))
+
+        idx = 0; n_pairs = len(pairs); n_groups = len(groups)
+        for net, j1, j2 in groups:             # groups first
+            idx += 1
+            self.tree.insert("", "end",
+                             values=(idx, f"GROUP \u2014 {len(net)} pins",
+                                     f"{len(j1)} J1 / {len(j2)} J2"),
+                             tags=("gnd",))
+            for L in sorted({_row(p) for p in net}):
+                l1 = ", ".join(p for p in j1 if _row(p) == L)
+                l2 = ", ".join(p for p in j2 if _row(p) == L)
+                self.tree.insert("", "end", values=("", l1, l2), tags=("gnd",))
+        for j1, j2 in pairs:                    # then signal pairs, numeric order
+            idx += 1
+            self.tree.insert("", "end", values=(idx, j1[0], j2[0]),
+                             tags=("odd" if idx % 2 else "even",))
+        return n_pairs, n_groups
+
+    def _rebuild_conn_tree(self, orientation="forward", raw=False):
+        """Repopulate the CONNECTIONS FOUND tree once the test is done.
+        raw=True -> group by electrical net with no PASS/FAIL judgment.
+        Otherwise validate signal pairs against the (possibly reversed) profile
+        and collapse the GND bus to one row."""
+        if not self.current_result:
+            return
+        if raw:
+            return self._render_raw_groups()
+        prof = self.active_profile or DEFAULT_PROFILE
+        _exp = dict(prof.signal_map()); _g1 = set(prof.gnd_j1()); _g2 = set(prof.gnd_j2())
+        if orientation == "reversed":
+            _exp = {v: k for k, v in _exp.items()}
+            _g1, _g2 = _g2, _g1
+        for it in self.tree.get_children():
+            self.tree.delete(it)
+        self._gnd_tree_id = None; self._gnd_count = 0
+        signals = []; gnd_n = 0
+        for conn in self.current_result.connections:
+            j1, j2 = conn.j1_pin, conn.j2_pin
+            if j1 in _g1 or j2 in _g2:
+                gnd_n += 1
+            else:
+                signals.append((j1, j2))
+        idx = 0
+        if gnd_n:
+            idx += 1
+            ori_txt = "  (reversed B\u2192A)" if orientation == "reversed" else ""
+            self.tree.insert("", "end",
+                             values=(idx, "GND bus", f"GND — {gnd_n} connection(s){ori_txt}"),
+                             tags=("gnd",))
+        seen = set()
+        for j1, j2 in signals:
+            if j1 in seen:
+                continue
+            seen.add(j1)
+            idx += 1
+            exp = _exp.get(j1)
+            if exp is None:
+                tag = "unexpected"; disp = f"J2.{j2}  ⚠ unexpected"
+            elif j2 == exp:
+                tag = "odd" if idx % 2 else "even"; disp = f"J2.{j2}  ✓"
+            else:
+                tag = "miswire"; disp = f"J2.{j2}  ✗ expected J2.{exp}"
+            self.tree.insert("", "end", values=(idx, f"J1.{j1}", disp), tags=(tag,))
+
     def _on_test_done(self):
         if self.test_stopped:
             return
@@ -1588,7 +2230,7 @@ class App(tk.Tk):
     # -- Cable profile management ------------------------------------------
     def _refresh_profiles(self):
         self._profile_paths = list_profiles()
-        names = [DEFAULT_PROFILE_NAME] + list(self._profile_paths.keys())
+        names = [DEFAULT_PROFILE_NAME, RAW_PROFILE_NAME] + list(self._profile_paths.keys())
         self.cb_profile["values"] = names
         if self.var_profile.get() not in names:
             self.var_profile.set(DEFAULT_PROFILE_NAME)
@@ -1596,6 +2238,13 @@ class App(tk.Tk):
 
     def _on_profile_select(self, event=None):
         name = self.var_profile.get()
+        if name == RAW_PROFILE_NAME:
+            self.active_profile = None
+            self.lbl_profile_info.config(
+                text="Raw capture: shows the measured netlist only, no comparison "
+                     "(click Learn to save it as a profile)")
+            self._status("Raw capture mode - no reference")
+            return
         if name == DEFAULT_PROFILE_NAME or name not in self._profile_paths:
             self.active_profile = DEFAULT_PROFILE
             self.lbl_profile_info.config(
@@ -1642,18 +2291,46 @@ class App(tk.Tk):
             f"Profile '{prof.name}' saved\n{len(prof.edges)} expected connections.\n\n"
             "Select this profile next time to test this cable type.")
 
+    def _finish_raw(self):
+        """RAW capture mode: no reference profile. Show the measured netlist
+        as-is (GND bus collapsed, signal pairs listed) with no PASS/FAIL, so a
+        brand-new cable can be inspected on the first run and then saved with
+        the Learn button."""
+        conns = self.current_result.connections
+        self._last_profile_result = None
+        n_pairs, n_groups = self._rebuild_conn_tree(raw=True) or (0, 0)
+        n = len(conns)
+        self.result_frame.config(bg=CLR_ACCENT)
+        self.lbl_result.config(
+            text=(f"RAW CAPTURE - {n} connection(s): {n_pairs} signal pair(s), "
+                  f"{n_groups} group(s).  Click 'Learn' to save as a profile."),
+            bg=CLR_ACCENT)
+        self._status(f"RAW CAPTURE - {n} connections, {n_pairs} pair(s), {n_groups} group(s)")
+        self._log(f"[RAW] {n} connections - {n_pairs} signal pair(s), {n_groups} group(s)")
+        self.btn_test.config(state="normal")
+        self.btn_stop.config(state="disabled", bg="#7F8C8D")
+        self.btn_export.config(state="normal" if EXCEL_OK else "disabled")
+        if hasattr(self, "btn_learn"):
+            self.btn_learn.config(state="normal")
+        self._increment_sn()
+
     def _finish_with_profile(self, n):
+        if self.active_profile is None:          # RAW capture mode
+            self._finish_raw()
+            return
         prof = self.active_profile
         measured = {(c.j1_pin, c.j2_pin) for c in self.current_result.connections}
         res = prof.compare(measured)
         self._last_profile_result = res
+        self._rebuild_conn_tree(res.get("orientation", "forward"))
         opens, extras = res["opens"], res["extras"]
         if res["verdict"] == "PASS":
+            _ori = " (cable reversed B\u2192A)" if res.get("orientation") == "reversed" else ""
             self.result_frame.config(bg=CLR_PASS)
             self.lbl_result.config(
-                text=f"PASS - {prof.name} - {res['n_ok']}/{res['n_expected']} connections",
+                text=f"PASS - {prof.name} - {res['n_ok']}/{res['n_expected']} connections{_ori}",
                 bg=CLR_PASS)
-            self._status(f"PASS [{prof.name}] - {res['n_ok']}/{res['n_expected']} OK")
+            self._status(f"PASS [{prof.name}] - {res['n_ok']}/{res['n_expected']} OK{_ori}")
         else:
             issues = len(opens) + len(extras)
             self.result_frame.config(bg=CLR_FAIL)
@@ -2210,7 +2887,64 @@ class App(tk.Tk):
         if not self.current_result:
             messagebox.showinfo("No Data", "No test result to export.")
             return
-        self._export_profile_report()
+        if not EXCEL_OK:
+            messagebox.showerror("Missing Library", "openpyxl is not installed.")
+            return
+
+        reports_dir = Path("reports"); reports_dir.mkdir(exist_ok=True)
+        ts   = self.current_result.timestamp.strftime("%Y%m%d_%H%M%S")
+        sn   = self.current_result.serial_number.replace("/", "_")
+        out  = reports_dir / f"cable_test_{sn}_{ts}.xlsx"
+
+        # Locate the report template: PyInstaller bundle, next to the app,
+        # then CWD, else auto-create.
+        try:
+            here = Path(__file__).resolve().parent
+        except NameError:
+            here = Path.cwd()
+        cands = []
+        if getattr(sys, "_MEIPASS", None):          # running as a frozen .exe
+            cands.append(Path(sys._MEIPASS) / TEMPLATE_FILE)
+        cands += [here / TEMPLATE_FILE, Path(TEMPLATE_FILE)]
+        template = None
+        for cand in cands:
+            if cand.exists():
+                template = cand
+                break
+        if template is None:
+            try:
+                from create_template import create_template
+                template = Path(TEMPLATE_FILE)
+                create_template(str(template))
+            except Exception as e:
+                messagebox.showerror(
+                    "Template Error",
+                    f"Cannot find/create template: {e}\n"
+                    "Place cable_test_report_template.xlsx next to the app.")
+                return
+
+        prof = self.active_profile
+        if prof is None:          # RAW capture - export the measured netlist itself
+            prof = CableProfile.from_connections(
+                RAW_PROFILE_NAME, self.current_result.connections)
+        expected_map = prof.signal_map()
+        gnd_j1 = prof.gnd_j1()
+        gnd_j2 = prof.gnd_j2()
+
+        try:
+            gen = ReportGenerator()
+            gen.generate(self.current_result, str(template), str(out),
+                         expected_map, gnd_j1, gnd_j2)
+        except Exception as e:
+            messagebox.showerror("Export Error", str(e))
+            return
+
+        self._log(f"[REPORT] Saved: {out}")
+        if messagebox.askyesno("Saved", f"Saved: {out.name}\n\nOpen now?"):
+            if sys.platform == "win32":
+                os.startfile(str(out))
+            else:
+                os.system(f"xdg-open '{out}'")
 
     def _open_reports_folder(self):
         d = Path("reports")

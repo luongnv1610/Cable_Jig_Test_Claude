@@ -1,194 +1,5 @@
 [
   {
-    "ts": "2026-05-27T19:03:14.206766",
-    "sn": "SN-000001",
-    "connections": 0,
-    "completed": true,
-    "duration": 1555.2525334358215
-  },
-  {
-    "ts": "2026-05-27T19:03:14.206766",
-    "sn": "SN-000001",
-    "connections": 0,
-    "completed": true,
-    "duration": 1555.2525334358215
-  },
-  {
-    "ts": "2026-05-27T19:29:19.254010",
-    "sn": "SN-000003",
-    "connections": 0,
-    "completed": true,
-    "duration": 3.3158695697784424
-  },
-  {
-    "ts": "2026-05-27T19:29:25.533473",
-    "sn": "SN-000004",
-    "connections": 0,
-    "completed": true,
-    "duration": 88.02167987823486
-  },
-  {
-    "ts": "2026-05-27T19:29:25.533473",
-    "sn": "SN-000004",
-    "connections": 0,
-    "completed": true,
-    "duration": 88.02167987823486
-  },
-  {
-    "ts": "2026-05-27T19:29:25.533473",
-    "sn": "SN-000004",
-    "connections": 0,
-    "completed": true,
-    "duration": 88.02167987823486
-  },
-  {
-    "ts": "2026-05-27T19:29:25.533473",
-    "sn": "SN-000004",
-    "connections": 0,
-    "completed": true,
-    "duration": 88.02167987823486
-  },
-  {
-    "ts": "2026-05-27T19:29:25.533473",
-    "sn": "SN-000004",
-    "connections": 0,
-    "completed": true,
-    "duration": 88.02167987823486
-  },
-  {
-    "ts": "2026-05-27T19:29:25.533473",
-    "sn": "SN-000004",
-    "connections": 0,
-    "completed": true,
-    "duration": 88.02167987823486
-  },
-  {
-    "ts": "2026-05-27T19:30:57.892819",
-    "sn": "SN-000010",
-    "connections": 0,
-    "completed": true,
-    "duration": 0.0010979175567626953
-  },
-  {
-    "ts": "2026-05-27T19:30:59.929539",
-    "sn": "SN-000011",
-    "connections": 0,
-    "completed": true,
-    "duration": 3220.632241487503
-  },
-  {
-    "ts": "2026-05-27T19:30:59.929539",
-    "sn": "SN-000011",
-    "connections": 0,
-    "completed": true,
-    "duration": 3220.632241487503
-  },
-  {
-    "ts": "2026-05-27T19:30:59.929539",
-    "sn": "SN-000011",
-    "connections": 0,
-    "completed": true,
-    "duration": 3220.632241487503
-  },
-  {
-    "ts": "2026-05-27T21:09:26.375845",
-    "sn": "SN-000014",
-    "connections": 0,
-    "completed": true,
-    "duration": 9.325091361999512
-  },
-  {
-    "ts": "2026-05-27T21:09:39.971976",
-    "sn": "SN-000015",
-    "connections": 0,
-    "completed": true,
-    "duration": 9.348852157592773
-  },
-  {
-    "ts": "2026-05-27T21:10:10.224319",
-    "sn": "SN-000016",
-    "connections": 0,
-    "completed": true,
-    "duration": 9.41554856300354
-  },
-  {
-    "ts": "2026-05-27T21:10:58.495841",
-    "sn": "SN-000017",
-    "connections": 0,
-    "completed": true,
-    "duration": 9.300456285476685
-  },
-  {
-    "ts": "2026-05-27T21:12:33.659524",
-    "sn": "SN-000018",
-    "connections": 0,
-    "completed": true,
-    "duration": 3.267272710800171
-  },
-  {
-    "ts": "2026-05-27T21:16:31.730798",
-    "sn": "SN-000019",
-    "connections": 0,
-    "completed": true,
-    "duration": 24.866706132888794
-  },
-  {
-    "ts": "2026-05-27T21:21:14.574329",
-    "sn": "SN-000020",
-    "connections": 0,
-    "completed": true,
-    "duration": 24.959089756011963
-  },
-  {
-    "ts": "2026-05-27T21:22:01.470233",
-    "sn": "SN-000021",
-    "connections": 0,
-    "completed": true,
-    "duration": 24.981956720352173
-  },
-  {
-    "ts": "2026-05-27T21:23:37.609441",
-    "sn": "SN-000022",
-    "connections": 0,
-    "completed": true,
-    "duration": 3.482699394226074
-  },
-  {
-    "ts": "2026-05-27T21:24:43.821432",
-    "sn": "SN-000023",
-    "connections": 0,
-    "completed": true,
-    "duration": 3.3760149478912354
-  },
-  {
-    "ts": "2026-05-27T21:29:11.699677",
-    "sn": "SN-000024",
-    "connections": 0,
-    "completed": true,
-    "duration": 3.436414957046509
-  },
-  {
-    "ts": "2026-05-27T21:29:34.148070",
-    "sn": "SN-000025",
-    "connections": 0,
-    "completed": true,
-    "duration": 3.4073946475982666
-  },
-  {
-    "ts": "2026-05-27T21:31:35.395342",
-    "sn": "SN-000026",
-    "connections": 0,
-    "completed": true,
-    "duration": 3.3963773250579834
-  },
-  {
-    "ts": "2026-05-27T21:31:50.063566",
-    "sn": "SN-000027",
-    "connections": 0,
-    "completed": true,
-    "duration": 3.4021735191345215
-  },
-  {
     "ts": "2026-05-27T21:37:19.066354",
     "sn": "SN-000028",
     "connections": 0,
@@ -1374,8 +1185,218 @@
   {
     "ts": "2026-05-31T16:41:35.672877",
     "sn": "SN-000001",
-    "connections": 2566,
+    "connections": 0,
     "completed": true,
     "duration": 9.451260566711426
+  },
+  {
+    "ts": "2026-07-18T07:06:17.943492",
+    "sn": "SN-000001",
+    "connections": 0,
+    "completed": true,
+    "duration": 3.7916460037231445
+  },
+  {
+    "ts": "2026-07-18T07:06:28.267178",
+    "sn": "SN-000002",
+    "connections": 0,
+    "completed": true,
+    "duration": 3.7854018211364746
+  },
+  {
+    "ts": "2026-07-18T07:06:33.551101",
+    "sn": "SN-000003",
+    "connections": 0,
+    "completed": true,
+    "duration": 3.776128053665161
+  },
+  {
+    "ts": "2026-07-18T07:06:45.811100",
+    "sn": "SN-000004",
+    "connections": 0,
+    "completed": true,
+    "duration": 3.7756271362304688
+  },
+  {
+    "ts": "2026-07-18T07:10:49.344469",
+    "sn": "SN-000005",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.372300863265991
+  },
+  {
+    "ts": "2026-07-18T07:11:48.430592",
+    "sn": "SN-000006",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.353642702102661
+  },
+  {
+    "ts": "2026-07-18T07:41:39.317269",
+    "sn": "SN-000001",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.406400203704834
+  },
+  {
+    "ts": "2026-07-18T07:42:13.336932",
+    "sn": "SN-000002",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.414432287216187
+  },
+  {
+    "ts": "2026-07-18T07:45:16.797258",
+    "sn": "SN-000001",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.419008016586304
+  },
+  {
+    "ts": "2026-07-18T07:53:06.609264",
+    "sn": "SN-000001",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.428866624832153
+  },
+  {
+    "ts": "2026-07-18T07:55:38.403064",
+    "sn": "SN-000002",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.420040369033813
+  },
+  {
+    "ts": "2026-07-18T08:00:07.134844",
+    "sn": "SN-000002",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.463828802108765
+  },
+  {
+    "ts": "2026-07-18T08:12:17.985463",
+    "sn": "SN-000000",
+    "connections": 0,
+    "completed": true,
+    "duration": 7.608426570892334
+  },
+  {
+    "ts": "2026-07-18T08:12:38.285386",
+    "sn": "SN-000000",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.293663263320923
+  },
+  {
+    "ts": "2026-07-18T09:19:24.136955",
+    "sn": "SN-000000",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.375807285308838
+  },
+  {
+    "ts": "2026-07-18T09:21:28.199218",
+    "sn": "SN-000000",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.373485326766968
+  },
+  {
+    "ts": "2026-07-18T09:35:54.287437",
+    "sn": "SN-000000",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.396415948867798
+  },
+  {
+    "ts": "2026-07-18T09:47:50.957966",
+    "sn": "SN-000000",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.381757497787476
+  },
+  {
+    "ts": "2026-07-18T09:48:14.657030",
+    "sn": "SN-000000",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.387517929077148
+  },
+  {
+    "ts": "2026-07-18T10:00:41.766322",
+    "sn": "SN-000000",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.346347570419312
+  },
+  {
+    "ts": "2026-07-18T10:11:21.365842",
+    "sn": "SN-000000",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.391316890716553
+  },
+  {
+    "ts": "2026-07-18T10:16:17.669527",
+    "sn": "SN-000000",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.361752986907959
+  },
+  {
+    "ts": "2026-07-18T10:19:03.651628",
+    "sn": "SN-000000",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.362715482711792
+  },
+  {
+    "ts": "2026-07-18T10:24:45.654742",
+    "sn": "SN-000000",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.387000799179077
+  },
+  {
+    "ts": "2026-07-18T10:27:35.656480",
+    "sn": "SN-000000",
+    "connections": 0,
+    "completed": true,
+    "duration": 9.401140213012695
+  },
+  {
+    "ts": "2026-07-18T10:48:14.247445",
+    "sn": "SN-000000",
+    "connections": 2566,
+    "completed": true,
+    "duration": 9.403259515762329
+  },
+  {
+    "ts": "2026-07-18T10:48:28.755646",
+    "sn": "SN-000000",
+    "connections": 2566,
+    "completed": true,
+    "duration": 9.354424238204956
+  },
+  {
+    "ts": "2026-07-18T10:51:06.012988",
+    "sn": "SN-000000",
+    "connections": 2566,
+    "completed": true,
+    "duration": 9.376299381256104
+  },
+  {
+    "ts": "2026-07-18T10:52:22.239306",
+    "sn": "SN-000000",
+    "connections": 2566,
+    "completed": true,
+    "duration": 9.348900318145752
+  },
+  {
+    "ts": "2026-07-18T10:53:00.091963",
+    "sn": "SN-000000",
+    "connections": 2566,
+    "completed": true,
+    "duration": 9.35831594467163
   }
 ]
