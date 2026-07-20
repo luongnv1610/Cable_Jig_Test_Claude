@@ -38,6 +38,8 @@ APP_TITLE   = "Cable Jig Tester v4.6"
 BAUD_RATE   = 115200
 TIMEOUT_S   = 0.1
 TEMPLATE_FILE = "cable_test_report_template.xlsx"
+LOGO_BAR_FILE = "NEU_PMC_logo_bar.png"   # NEU-PMC logo for the app top bar
+LOGO_FULL_FILE = "NEU_PMC_logo.png"      # full logo (with company name)
 HISTORY_FILE  = "test_history.json"
 PROFILE_DIR   = "cable_profiles"
 
@@ -908,10 +910,36 @@ class App(tk.Tk):
         self._build_main()
         self._build_statusbar()
 
+    def _asset_path(self, name):
+        """Locate a bundled asset (PyInstaller _MEIPASS, next to the app, or CWD)."""
+        cands = []
+        if getattr(sys, "_MEIPASS", None):
+            cands.append(Path(sys._MEIPASS) / name)
+        try:
+            cands.append(Path(__file__).resolve().parent / name)
+        except NameError:
+            pass
+        cands.append(Path(name))
+        for c in cands:
+            if c.exists():
+                return str(c)
+        return None
+
     def _build_topbar(self):
         top = tk.Frame(self, bg=CLR_PANEL, height=60)
         top.pack(fill="x", side="top")
         top.pack_propagate(False)
+
+        # NEU-PMC logo
+        self._logo_bar = None
+        _lp = self._asset_path(LOGO_BAR_FILE)
+        if _lp:
+            try:
+                self._logo_bar = tk.PhotoImage(file=_lp)
+                tk.Label(top, image=self._logo_bar, bg=CLR_PANEL).pack(
+                    side="left", padx=(16, 6), pady=7)
+            except Exception:
+                self._logo_bar = None
 
         tk.Label(top, text="⚡ " + APP_TITLE,
                  font=("Arial",16,"bold"), fg=CLR_TEXT, bg=CLR_PANEL
