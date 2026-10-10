@@ -1,0 +1,79 @@
+[
+  {
+    "ts": "2026-07-23T09:23:33.549543",
+    "sn": "SN-000000",
+    "connections": 2566,
+    "completed": true,
+    "duration": 9.407197952270508
+  },
+  {
+    "ts": "2026-07-23T09:24:09.866397",
+    "sn": "SN-000000",
+    "connections": 2566,
+    "completed": true,
+    "duration": 9.41932487487793
+  },
+  {
+    "ts": "2026-07-23T09:25:21.354887",
+    "sn": "SN-000000",
+    "connections": 2566,
+    "completed": true,
+    "duration": 9.43965458869934
+  },
+  {
+    "ts": "2026-07-23T09:26:02.599017",
+    "sn": "SN-000000",
+    "connections": 2566,
+    "completed": true,
+    "duration": 9.417202234268188
+  },
+  {
+    "ts": "2026-07-23T09:28:46.068899",
+    "sn": "SN-000000",
+    "connections": 2566,
+    "completed": true,
+    "duration": 9.423268556594849
+  },
+  {
+    "ts": "2026-07-23T09:30:27.260980",
+    "sn": "SN-000000",
+    "connections": 2566,
+    "completed": true,
+    "duration": 9.410457372665405
+  },
+  {
+    "ts": "2026-07-23T09:41:22.265666",
+    "sn": "SN-000000",
+    "connections": 2566,
+    "completed": true,
+    "duration": 9.409430265426636
+  },
+  {
+    "ts": "2026-07-23T09:47:22.449851",
+    "sn": "SN-000000",
+    "connections": 2566,
+    "completed": true,
+    "duration": 9.41865873336792
+  },
+  {
+    "ts": "2026-07-23T09:50:37.144973",
+    "sn": "SN-000000",
+    "connections": 2156,
+    "completed": true,
+    "duration": 227.53846645355225
+  },
+  {
+    "ts": "2026-07-23T09:50:37.144973",
+    "sn": "SN-000000",
+    "connections": 2156,
+    "completed": true,
+    "duration": 227.53846645355225
+  },
+  {
+    "ts": "2026-07-23T09:50:37.144973",
+    "sn": "SN-000000",
+    "connections": 2156,
+    "completed": true,
+    "duration": 227.53846645355225
+  }
+]
